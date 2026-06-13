@@ -3,6 +3,7 @@ from time import perf_counter
 from quickapi.app.config import QuickAPIConfig
 from quickapi.app.lifecycle import Lifecycle
 from quickapi.bridge.native_bridge import NativeBridge
+from quickapi.bridge.native_runtime import NativeRuntime
 from quickapi.docs.html import render_docs_html
 from quickapi.docs.openapi import build_openapi
 from quickapi.http.request import Request
@@ -27,6 +28,7 @@ class QuickAPI:
         self.security = SecurityGuard(enabled=secure, max_body_size=self.config.max_body_size)
         self.ml_engine = MLEngine(enabled=ml)
         self.native_bridge = NativeBridge()
+        self.native_runtime = NativeRuntime(self.config.native_library) if self.config.native_library else NativeRuntime()
         self.jobs = JobQueue(max_workers=self.config.job_workers)
         self.lifecycle.on_shutdown(self.jobs.shutdown)
 
@@ -118,6 +120,26 @@ class QuickAPI:
             message="Job accepted",
         )
 
+    def runtime_status(self):
+        native = self.native_runtime.runtime_summary()
+        return {
+            "name": self.config.name,
+            "python": {
+                "docs": self.config.docs,
+                "secure": self.config.secure,
+                "ml": self.config.ml,
+                "job_workers": self.config.job_workers,
+                "routes": len(self.routes),
+            },
+            "native": native,
+            "features": {
+                "streaming_files": True,
+                "job_queue": True,
+                "ml_engine": True,
+                "security_guard": True,
+            },
+        }
+
     def _handle_builtin(self, request: Request):
         if request.method == "GET" and request.path in {"/docs", "/quick"}:
             if not self.config.docs:
@@ -127,6 +149,8 @@ class QuickAPI:
             if not self.config.docs:
                 return q.not_found()
             return q.ok(build_openapi(self))
+        if request.method == "GET" and request.path == "/quick/runtime":
+            return q.ok(self.runtime_status(), message="Runtime status")
         if request.method == "GET" and request.path == "/quick/jobs":
             return q.ok({"jobs": self.jobs.list()})
         if request.path.startswith("/quick/jobs/"):

@@ -7,8 +7,17 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 add_library(quickapi_native SHARED
     core/quick_core.c
+    core/quick_memory.cpp
+    core/quick_buffer.cpp
+    core/quick_string.cpp
     http/quick_http.cpp
+    http/quick_file_stream.cpp
+    http/quick_request.cpp
+    http/quick_response.cpp
+    isolate/quick_isolate.cpp
     json/quick_json.cpp
+    json/quick_json_writer.cpp
+    jobs/quick_job_queue.cpp
     loader/quick_native_loader.cpp
     metrics/quick_metrics.cpp
     router/quick_router.cpp

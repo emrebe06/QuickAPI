@@ -13,3 +13,4 @@ class QuickAPIConfig:
     port: int = 8080
     max_body_size: int = 1024 * 1024
     job_workers: int = 4
+    native_library: str | None = None

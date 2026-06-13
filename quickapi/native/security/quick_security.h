@@ -15,6 +15,22 @@ QUICKAPI_EXPORT int quickapi_security_payload_suspicious(const char* payload);
 QUICKAPI_EXPORT unsigned int quickapi_security_payload_feature_count(const char* payload);
 QUICKAPI_EXPORT double quickapi_security_payload_risk_score(const char* path, const char* payload);
 QUICKAPI_EXPORT unsigned long long quickapi_security_fingerprint(const char* path, const char* payload);
+QUICKAPI_EXPORT int quickapi_security_request_allowed(
+    const char* method,
+    const char* path,
+    const char* content_type,
+    size_t body_size,
+    size_t max_body_size,
+    const char* payload
+);
+QUICKAPI_EXPORT const char* quickapi_security_scan_request(
+    const char* method,
+    const char* path,
+    const char* content_type,
+    size_t body_size,
+    size_t max_body_size,
+    const char* payload
+);
 QUICKAPI_EXPORT const char* quickapi_security_last_reason(void);
 
 #ifdef __cplusplus

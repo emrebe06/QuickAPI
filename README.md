@@ -19,7 +19,7 @@ QuickAPI is not a FastAPI clone. Decorators are familiar, but the goal is differ
 - Streaming file responses through `FileResponse`, `app.file()`, and `app.static_file()`
 - Built-in job queue for long-running work with `202 Accepted`, `job_id`, status, and cancel endpoints
 - Ecommerce response presets
-- C/C++ native core starter with CMake and security/risk hotpath helpers
+- C/C++ native core starter with CMake, memory primitives, request/response views, and security/risk hotpath helpers
 - Native endpoint bridge through `ctypes`
 - Basic security guard: CORS, JSON content-type checks, request size limit, rate limiting
 - Nginx-friendly listener with `X-Forwarded-For` and `X-Real-IP` support
@@ -264,6 +264,36 @@ cmake --build build/native --config Release
 ```
 
 Native hotpath helpers are also available through `NativeRuntime` for payload feature count, risk score, and stable request fingerprints.
+
+## Native Runtime Foundation
+
+QuickAPI now ships a larger C/C++ foundation under `quickapi/native`. Python remains the developer and intelligence layer, while the native side is being shaped for high-traffic hot paths:
+
+- `quickapi_string_view` for non-owning request-safe string slices
+- `quickapi_buffer` for bounded response and JSON buffers
+- `quickapi_arena` for fast resettable memory allocation
+- `quickapi_result` for stable native error/result returns
+- native request and response view primitives
+- native JSON success response writer
+- native security scanner hotpath helpers
+- chunked native file streamer primitives
+- bounded native job queue worker primitives
+- isolated worker planning primitives for future native process execution
+
+The runtime status endpoint exposes what is available:
+
+```bash
+GET /quick/runtime
+```
+
+Example Python check:
+
+```python
+from quickapi.bridge import NativeRuntime
+
+native = NativeRuntime("build/native/Release/quickapi_native.dll")
+print(native.runtime_summary())
+```
 
 ## CLI
 
