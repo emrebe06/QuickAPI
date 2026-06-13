@@ -6,10 +6,12 @@ from quickapi.bridge.native_bridge import NativeBridge
 from quickapi.docs.html import render_docs_html
 from quickapi.docs.openapi import build_openapi
 from quickapi.http.request import Request
+from quickapi.jobs.queue import JobQueue
 from quickapi.metrics.request_id import new_request_id
 from quickapi.metrics.timing import elapsed_ms
 from quickapi.ml.engine import MLEngine
 from quickapi.response.factory import q
+from quickapi.response.file_response import FileResponse, safe_file_response
 from quickapi.response.json_response import JSONResponse
 from quickapi.routing.router import Router
 from quickapi.security.guard import SecurityGuard
@@ -25,6 +27,8 @@ class QuickAPI:
         self.security = SecurityGuard(enabled=secure, max_body_size=self.config.max_body_size)
         self.ml_engine = MLEngine(enabled=ml)
         self.native_bridge = NativeBridge()
+        self.jobs = JobQueue(max_workers=self.config.job_workers)
+        self.lifecycle.on_shutdown(self.jobs.shutdown)
 
     @property
     def routes(self):
@@ -91,6 +95,29 @@ class QuickAPI:
     def cors_headers(self) -> dict[str, str]:
         return dict(DEFAULT_CORS_HEADERS)
 
+    def file(self, path, *, download_name: str | None = None, headers: dict[str, str] | None = None):
+        response = FileResponse(path, download_name=download_name)
+        if headers:
+            response.headers.update(headers)
+        return response
+
+    def static_file(self, root, path: str, *, download: bool = False):
+        response = safe_file_response(root, path, download=download)
+        if response is None:
+            return q.not_found("Static file was not found")
+        return response
+
+    def submit_job(self, func, *args, name: str | None = None, **kwargs):
+        record = self.jobs.submit(func, *args, name=name, **kwargs)
+        return q.accepted(
+            {
+                "job_id": record.id,
+                "status": record.status,
+                "status_url": f"/quick/jobs/{record.id}",
+            },
+            message="Job accepted",
+        )
+
     def _handle_builtin(self, request: Request):
         if request.method == "GET" and request.path in {"/docs", "/quick"}:
             if not self.config.docs:
@@ -100,10 +127,26 @@ class QuickAPI:
             if not self.config.docs:
                 return q.not_found()
             return q.ok(build_openapi(self))
+        if request.method == "GET" and request.path == "/quick/jobs":
+            return q.ok({"jobs": self.jobs.list()})
+        if request.path.startswith("/quick/jobs/"):
+            job_id = request.path.rsplit("/", 1)[-1]
+            record = self.jobs.get(job_id)
+            if record is None:
+                return q.not_found("Job not found", {"job_id": job_id})
+            if request.method == "GET":
+                return q.ok(record.to_dict(), message="Job status")
+            if request.method == "DELETE":
+                cancelled = self.jobs.cancel(job_id)
+                return q.ok(cancelled.to_dict(), message="Job cancel requested")
         return None
 
     def _finalize(self, result, request_id: str, time_ms: float):
         headers = None
+        if isinstance(result, FileResponse):
+            result.headers.setdefault("X-Request-ID", request_id)
+            result.headers.setdefault("X-Response-Time-MS", str(time_ms))
+            return result
         if isinstance(result, JSONResponse):
             body = result.to_dict()
             status = result.status

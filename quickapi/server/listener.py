@@ -94,15 +94,21 @@ class QuickListener:
                 return self.client_address[0]
 
             def _send(self, response: JSONResponse):
-                payload = response.to_bytes()
                 self.send_response(response.status)
                 for key, value in response.headers.items():
                     self.send_header(key, value)
-                self.send_header("Content-Length", str(len(payload)))
+                payload = None
+                if not hasattr(response, "iter_bytes"):
+                    payload = response.to_bytes()
+                    self.send_header("Content-Length", str(len(payload)))
                 self.send_header("Connection", "close")
                 self.end_headers()
                 if response.status != 204:
-                    self.wfile.write(payload)
+                    if hasattr(response, "iter_bytes"):
+                        for chunk in response.iter_bytes():
+                            self.wfile.write(chunk)
+                    else:
+                        self.wfile.write(payload)
 
             def log_message(self, *_):
                 return

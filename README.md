@@ -15,9 +15,11 @@ QuickAPI is not a FastAPI clone. Decorators are familiar, but the goal is differ
 - CLI runner similar to `uvicorn`: `quickapi run main:app --host 0.0.0.0 --port 8000`
 - Built-in lightweight docs at `/docs`, `/quick`, and `/openapi.json`
 - Request object injection: `body`, `query`, `headers`, `request`, `ml`
-- Rule-based ML guard stub for intent/risk/bot scoring
+- ML guard with intent classification, request feature extraction, anomaly signals, risk scoring, bot scoring, and action policy
+- Streaming file responses through `FileResponse`, `app.file()`, and `app.static_file()`
+- Built-in job queue for long-running work with `202 Accepted`, `job_id`, status, and cancel endpoints
 - Ecommerce response presets
-- C/C++ native core starter with CMake
+- C/C++ native core starter with CMake and security/risk hotpath helpers
 - Native endpoint bridge through `ctypes`
 - Basic security guard: CORS, JSON content-type checks, request size limit, rate limiting
 - Nginx-friendly listener with `X-Forwarded-For` and `X-Real-IP` support
@@ -176,16 +178,63 @@ def checkout(body, ml):
     return q.ok({"payment": "accepted", "ml": ml.to_dict()})
 ```
 
-The first ML engine is rule-based. It returns:
+The first ML engine is dependency-free and deterministic, but it is no longer a tiny stub. It extracts request features, classifies intent, scores risk and bot-likelihood, flags anomalies, and returns an action policy:
 
 ```json
 {
   "intent": "payment_attempt",
-  "risk_score": 0.32,
-  "bot_score": 0.02,
-  "action": "allow"
+  "risk_score": 0.92,
+  "bot_score": 0.22,
+  "action": "block",
+  "anomaly": true,
+  "confidence": 0.86,
+  "reasons": ["sensitive_intent:payment_attempt", "sql_injection"],
+  "features": {
+    "method": "POST",
+    "path_depth": 2,
+    "body_bytes": 27,
+    "header_count": 3,
+    "query_count": 0
+  }
 }
 ```
+
+## Streaming Files
+
+Use `app.file()` for downloads and `app.static_file()` for safe static assets:
+
+```python
+from pathlib import Path
+
+FILES = Path("storage/converted")
+
+
+@app.get("/downloads/{file_path:path}")
+def download(file_path):
+    return app.static_file(FILES, file_path, download=True)
+```
+
+The listener streams `FileResponse` chunks instead of forcing large files through `read_bytes()`.
+
+## Background Jobs
+
+Long work can be accepted immediately and tracked later:
+
+```python
+def heavy_task(value):
+    return {"value": value * 2}
+
+
+@app.post("/work")
+def work(body):
+    return app.submit_job(heavy_task, body.get("value", 1), name="heavy_task")
+```
+
+Built-in job endpoints:
+
+- `GET /quick/jobs`
+- `GET /quick/jobs/{job_id}`
+- `DELETE /quick/jobs/{job_id}`
 
 ## Native Endpoint Example
 
@@ -213,6 +262,8 @@ Native starter build:
 cmake -S quickapi/native -B build/native
 cmake --build build/native --config Release
 ```
+
+Native hotpath helpers are also available through `NativeRuntime` for payload feature count, risk score, and stable request fingerprints.
 
 ## CLI
 

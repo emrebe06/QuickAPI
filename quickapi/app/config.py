@@ -12,3 +12,4 @@ class QuickAPIConfig:
     host: str = "127.0.0.1"
     port: int = 8080
     max_body_size: int = 1024 * 1024
+    job_workers: int = 4

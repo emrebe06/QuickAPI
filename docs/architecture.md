@@ -5,21 +5,35 @@ QuickAPI is split into three layers:
 
 1. Python intelligence layer
    - Developer API: `QuickAPI`, decorators, `q` response factory.
-   - Routing metadata, ML decisions, ecommerce presets, docs and CLI.
+   - Routing metadata, ML decisions, job queue orchestration, ecommerce presets,
+     docs and CLI.
    - This is the layer users touch when they want to ship a backend quickly.
 
 2. Listener layer
    - `quickapi.server.QuickListener` owns HTTP parsing, proxy headers, CORS,
      access logs and response writing.
+   - JSON responses are buffered, while `FileResponse` values are streamed in
+     chunks for static assets and downloads.
    - `app.run()` is a convenience wrapper around the listener.
    - It is suitable behind nginx with `X-Forwarded-For` and `X-Real-IP`.
 
 3. Native core layer
    - `quickapi/native` exposes a C ABI for future hot paths:
      JSON response formatting, route matching, status names, basic security
-     checks, timing and native symbol loading.
+     checks, payload risk scoring, payload feature counting, stable request
+     fingerprints, timing and native symbol loading.
    - Python remains the orchestration layer while C/C++ can take over speed
      sensitive paths without changing the user-facing API.
+
+Background work
+---------------
+
+QuickAPI includes an in-process `JobQueue` for MVP and local production-style
+workloads. Handlers can return `app.submit_job(...)`, which emits `202 Accepted`
+and a `job_id`. Job state is available under `/quick/jobs`.
+
+This is intentionally simple and dependency-free. Public production systems can
+swap the same handler pattern to a durable queue later.
 
 Nginx proxy shape
 -----------------

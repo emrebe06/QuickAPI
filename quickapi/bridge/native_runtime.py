@@ -36,6 +36,24 @@ class NativeRuntime:
         )
         return json.loads(raw.decode("utf-8"))
 
+    def payload_risk_score(self, path: str, payload: str) -> float:
+        self._require()
+        self.library.quickapi_security_payload_risk_score.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
+        self.library.quickapi_security_payload_risk_score.restype = ctypes.c_double
+        return float(self.library.quickapi_security_payload_risk_score(path.encode("utf-8"), payload.encode("utf-8")))
+
+    def payload_feature_count(self, payload: str) -> int:
+        self._require()
+        self.library.quickapi_security_payload_feature_count.argtypes = [ctypes.c_char_p]
+        self.library.quickapi_security_payload_feature_count.restype = ctypes.c_uint
+        return int(self.library.quickapi_security_payload_feature_count(payload.encode("utf-8")))
+
+    def fingerprint(self, path: str, payload: str) -> int:
+        self._require()
+        self.library.quickapi_security_fingerprint.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
+        self.library.quickapi_security_fingerprint.restype = ctypes.c_ulonglong
+        return int(self.library.quickapi_security_fingerprint(path.encode("utf-8"), payload.encode("utf-8")))
+
     def _require(self):
         if not self.library:
             raise RuntimeError("Native runtime library is not loaded")
