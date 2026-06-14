@@ -27,6 +27,8 @@ QuickAPI is not a FastAPI clone. Decorators are familiar, but the goal is differ
 - Basic security guard: CORS, JSON content-type checks, request size limit, rate limiting
 - Nginx-friendly listener with `X-Forwarded-For` and `X-Real-IP` support
 
+See [SECURITY_MODEL.md](SECURITY_MODEL.md) for trust boundaries, defaults, native guard behavior, and known security gaps.
+
 ## Installation
 
 For local development:
@@ -373,9 +375,9 @@ Native hot-path benchmark:
 build/native/Release/quickapi_native_bench.exe 200000 250
 ```
 
-Native hotpath helpers are also available through `NativeRuntime` for payload feature count, risk score, stable request fingerprints, raw HTTP parsing, response writing, and listener-style parse/security/route/response exchange primitives.
+Native hotpath helpers are also available through `NativeRuntime` for payload feature count, risk score, stable request fingerprints, raw HTTP parsing, response writing, native route matching, and listener-style parse/security/route/response exchange primitives.
 
-Important current boundary: `app.native_post(...)` works through `ctypes` and routes from Python into a native symbol. The main HTTP listener and public route registry are still Python-owned today. Native routing/listener integration is an active core direction, not something the README should imply is already the default server path.
+Important current boundary: `app.native_post(...)` works through `ctypes` and routes from Python into a native symbol. Native route matching can now mirror Python routes when a native runtime library is loaded, but the public route registry and handler dispatch are still Python-owned today.
 
 ## Native Runtime Foundation
 
@@ -388,6 +390,7 @@ QuickAPI now ships a larger C/C++ foundation under `quickapi/native`. Python rem
 - native request and response view primitives
 - native JSON success response writer
 - native HTTP parser and listener exchange primitives
+- native route matching bridge when a native runtime library is loaded
 - native security scanner hotpath helpers
 - chunked native file streamer primitives
 - bounded native job queue worker primitives

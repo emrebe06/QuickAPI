@@ -12,12 +12,29 @@ class QuickASGIApp:
         self.app = app
 
     async def __call__(self, scope, receive, send):
+        if scope.get("type") == "lifespan":
+            await self._lifespan(receive, send)
+            return
         if scope.get("type") != "http":
             await send({"type": "http.response.start", "status": 500, "headers": []})
             await send({"type": "http.response.body", "body": b"Unsupported ASGI scope"})
             return
 
-        raw_body = await self._read_body(receive)
+        try:
+            raw_body = await self._read_body(receive, int(getattr(self.app.config, "max_body_size", 1024 * 1024)))
+        except ValueError as exc:
+            response = JSONResponse(
+                q.error(
+                    413,
+                    "PAYLOAD_TOO_LARGE",
+                    "Request body is too large",
+                    {"where": "body", "hint": str(exc), "max_body_size": getattr(self.app.config, "max_body_size", 1024 * 1024)},
+                ),
+                413,
+                headers=self.app.cors_headers(),
+            )
+            await self._send_response(send, response)
+            return
         headers = self._headers(scope)
         body = None
         if raw_body:
@@ -59,14 +76,39 @@ class QuickASGIApp:
             response.headers.setdefault(key, value)
         await self._send_response(send, response)
 
-    async def _read_body(self, receive) -> bytes:
+    async def _lifespan(self, receive, send):
+        while True:
+            message = await receive()
+            message_type = message.get("type")
+            if message_type == "lifespan.startup":
+                try:
+                    self.app.lifecycle.startup()
+                    await send({"type": "lifespan.startup.complete"})
+                except Exception as exc:
+                    await send({"type": "lifespan.startup.failed", "message": str(exc)})
+            elif message_type == "lifespan.shutdown":
+                try:
+                    self.app.lifecycle.shutdown()
+                    await send({"type": "lifespan.shutdown.complete"})
+                except Exception as exc:
+                    await send({"type": "lifespan.shutdown.failed", "message": str(exc)})
+                return
+
+    async def _read_body(self, receive, max_bytes: int) -> bytes:
         chunks: list[bytes] = []
+        total = 0
         more = True
         while more:
             message = await receive()
+            if message.get("type") == "http.disconnect":
+                break
             if message.get("type") != "http.request":
                 continue
-            chunks.append(message.get("body", b""))
+            chunk = message.get("body", b"")
+            total += len(chunk)
+            if total > max_bytes:
+                raise ValueError("ASGI body exceeded QuickAPI max_body_size.")
+            chunks.append(chunk)
             more = bool(message.get("more_body", False))
         return b"".join(chunks)
 

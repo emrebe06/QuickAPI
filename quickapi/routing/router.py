@@ -8,12 +8,16 @@ from quickapi.routing.route import Route
 
 
 class Router:
-    def __init__(self, registry: RouteRegistry | None = None):
+    def __init__(self, registry: RouteRegistry | None = None, native_router=None):
         self.registry = registry or RouteRegistry()
+        self.native_router = native_router
 
     def add_route(self, method: str, path: str, handler, **metadata):
         route = Route(path=path, method=method, handler=handler, **metadata)
-        return self.registry.add(route)
+        route = self.registry.add(route)
+        if self.native_router is not None:
+            self.native_router.add(route)
+        return route
 
     def route(self, method: str, path: str, **metadata):
         def decorator(handler):
@@ -23,12 +27,19 @@ class Router:
         return decorator
 
     def dispatch(self, request, ml_result=None):
-        route, path_params, allowed = self.registry.match(request.method, request.path)
+        route, path_params, allowed = self.match(request.method, request.path)
         if allowed:
             return q.method_not_allowed(detail={"allowed": allowed})
         if route is None:
             return q.not_found(detail=f"No route found for {request.method} {request.path}")
         return self.dispatch_route(route, request, path_params, ml_result)
+
+    def match(self, method: str, path: str):
+        if self.native_router is not None and self.native_router.enabled:
+            native_match = self.native_router.match(method, path)
+            if native_match is not None:
+                return native_match.route, native_match.path_params, native_match.allowed
+        return self.registry.match(method, path)
 
     def dispatch_route(self, route: Route, request, path_params: dict[str, str], ml_result=None):
         return self._call_route(route, request, path_params, ml_result)

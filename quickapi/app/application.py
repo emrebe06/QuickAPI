@@ -6,6 +6,7 @@ from quickapi.app.config import QuickAPIConfig
 from quickapi.agents.backend import AgentBackend
 from quickapi.app.lifecycle import Lifecycle
 from quickapi.bridge.native_bridge import NativeBridge
+from quickapi.bridge.native_router import NativeRouteBridge
 from quickapi.bridge.native_runtime import NativeRuntime
 from quickapi.dependencies import DependencyContainer, DependencyContext
 from quickapi.db.adapters import DatabaseRegistry
@@ -46,6 +47,8 @@ class QuickAPI:
         self.ml_engine = MLEngine(enabled=ml, model_path=self.config.ml_model_path)
         self.native_bridge = NativeBridge()
         self.native_runtime = NativeRuntime(self.config.native_library) if self.config.native_library else NativeRuntime()
+        self.native_router = NativeRouteBridge(self.native_runtime)
+        self.router.native_router = self.native_router
         self.synaptic = SynapticLayer(
             enabled=self.config.synaptic,
             ml_engine=self.ml_engine,
@@ -79,6 +82,7 @@ class QuickAPI:
         self.webhooks = WebhookProcessor()
         self.agents = AgentBackend(self)
         self.lifecycle.on_shutdown(self.jobs.shutdown)
+        self.lifecycle.on_shutdown(self.native_router.close)
 
     @property
     def routes(self):
@@ -165,7 +169,7 @@ class QuickAPI:
             if guard_response is not None:
                 return self._finalize(guard_response, request_id, elapsed_ms(start))
 
-            route, path_params, allowed = self.router.registry.match(request.method, request.path)
+            route, path_params, allowed = self.router.match(request.method, request.path)
             if allowed:
                 return self._finalize(q.method_not_allowed(detail={"allowed": allowed}), request_id, elapsed_ms(start))
             if route is None:
@@ -221,7 +225,7 @@ class QuickAPI:
             if guard_response is not None:
                 return self._finalize(guard_response, request_id, elapsed_ms(start))
 
-            route, path_params, allowed = self.router.registry.match(request.method, request.path)
+            route, path_params, allowed = self.router.match(request.method, request.path)
             if allowed:
                 return self._finalize(q.method_not_allowed(detail={"allowed": allowed}), request_id, elapsed_ms(start))
             if route is None:
@@ -343,6 +347,7 @@ class QuickAPI:
                 "dependency_injection": True,
                 "middleware": True,
                 "asgi_adapter": True,
+                "native_route_bridge": self.native_router.enabled,
                 "webhooks": True,
                 "agent_backend": True,
                 "local_tools_enabled": self.config.local_tools_enabled,
