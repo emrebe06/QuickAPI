@@ -14,6 +14,14 @@ class Route:
     rate_limit: str | None = None
     native: dict[str, str] | None = None
     name: str | None = None
+    summary: str | None = None
+    description: str | None = None
+    tags: list[str] = field(default_factory=list)
+    body_schema: Any = None
+    query_schema: Any = None
+    path_schema: Any = None
+    response_schema: Any = None
+    examples: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
         self.method = self.method.upper()
@@ -36,6 +44,14 @@ class Route:
             "auth": self.auth,
             "rate_limit": self.rate_limit,
             "native": bool(self.native),
+            "summary": self.summary or self.name,
+            "description": self.description,
+            "tags": self.tags,
+            "body_schema": self.body_schema,
+            "query_schema": self.query_schema,
+            "path_schema": self.path_schema,
+            "response_schema": self.response_schema,
+            "examples": self.examples,
         }
 
     @staticmethod

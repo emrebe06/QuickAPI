@@ -1,3 +1,4 @@
+import os
 from time import perf_counter
 
 from quickapi.app.config import QuickAPIConfig
@@ -17,7 +18,9 @@ from quickapi.response.json_response import JSONResponse
 from quickapi.routing.router import Router
 from quickapi.security.guard import SecurityGuard
 from quickapi.security.cors import DEFAULT_CORS_HEADERS
+from quickapi.security.tokens import token_from_header
 from quickapi.server.listener import QuickListener
+from quickapi.schema.validator import validate_payload
 
 
 class QuickAPI:
@@ -82,9 +85,26 @@ class QuickAPI:
             if guard_response is not None:
                 return self._finalize(guard_response, request_id, elapsed_ms(start))
 
-            route, _, _ = self.router.registry.match(request.method, request.path)
-            ml_result = self.ml_engine.analyze(request) if route and route.ml_check else None
-            result = self.router.dispatch(request, ml_result)
+            route, path_params, allowed = self.router.registry.match(request.method, request.path)
+            if allowed:
+                return self._finalize(q.method_not_allowed(detail={"allowed": allowed}), request_id, elapsed_ms(start))
+            if route is None:
+                return self._finalize(
+                    q.not_found(detail=f"No route found for {request.method} {request.path}"),
+                    request_id,
+                    elapsed_ms(start),
+                )
+
+            auth_response = self._authorize(route, request)
+            if auth_response is not None:
+                return self._finalize(auth_response, request_id, elapsed_ms(start))
+
+            validation_response = self._validate_route_input(route, request, path_params)
+            if validation_response is not None:
+                return self._finalize(validation_response, request_id, elapsed_ms(start))
+
+            ml_result = self.ml_engine.analyze(request) if route.ml_check else None
+            result = self.router.dispatch_route(route, request, path_params, ml_result)
             return self._finalize(result, request_id, elapsed_ms(start))
         except Exception as exc:
             return self._finalize(q.server_error(detail=str(exc)), request_id, elapsed_ms(start))
@@ -164,6 +184,68 @@ class QuickAPI:
                 cancelled = self.jobs.cancel(job_id)
                 return q.ok(cancelled.to_dict(), message="Job cancel requested")
         return None
+
+    def _authorize(self, route, request: Request):
+        if not route.auth:
+            return None
+
+        token = token_from_header(request.headers)
+        if not token:
+            return q.unauthorized(
+                "Authentication required",
+                {
+                    "where": "headers.Authorization",
+                    "expected": "Bearer <token>",
+                    "hint": "Send an Authorization header or disable auth for this route.",
+                },
+            )
+
+        validator = self.config.auth_validator
+        if validator is not None:
+            result = validator(token, request)
+            if result:
+                request.auth = result if isinstance(result, dict) else {"token": token, "method": "validator"}
+                return None
+            return q.forbidden(
+                "Token rejected",
+                {"where": "headers.Authorization", "hint": "The configured auth validator rejected this token."},
+            )
+
+        allowed = set(self.config.auth_tokens or [])
+        env_token = os.environ.get("QUICKAPI_AUTH_TOKEN") or os.environ.get("QUICKAPI_TOKEN")
+        if env_token:
+            allowed.add(env_token)
+        if not allowed:
+            return q.forbidden(
+                "Auth is not configured",
+                {
+                    "where": "app.config.auth_tokens",
+                    "hint": "Pass QuickAPI(..., auth_tokens={'secret'}) or auth_validator=callable.",
+                },
+            )
+        if token not in allowed:
+            return q.forbidden(
+                "Invalid token",
+                {"where": "headers.Authorization", "hint": "Bearer token did not match configured auth tokens."},
+            )
+
+        request.auth = {"token": token, "method": "bearer"}
+        return None
+
+    def _validate_route_input(self, route, request: Request, path_params: dict[str, str]):
+        issues = []
+        issues.extend(validate_payload(path_params, route.path_schema, location="path"))
+        issues.extend(validate_payload(request.query, route.query_schema, location="query"))
+        issues.extend(validate_payload(request.body, route.body_schema, location="body"))
+        if not issues:
+            return None
+        return q.validation(
+            "Request validation failed",
+            {
+                "issues": issues,
+                "hint": "Fix the fields listed in detail. The 'where' key points to the exact request location.",
+            },
+        )
 
     def _finalize(self, result, request_id: str, time_ms: float):
         headers = None

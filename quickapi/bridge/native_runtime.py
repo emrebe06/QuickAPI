@@ -26,6 +26,23 @@ class NativeRequestView(ctypes.Structure):
     ]
 
 
+class NativeHttpParse(ctypes.Structure):
+    _fields_ = [
+        ("ok", ctypes.c_int),
+        ("result", NativeResult),
+        ("method", NativeStringView),
+        ("target", NativeStringView),
+        ("path", NativeStringView),
+        ("query", NativeStringView),
+        ("version", NativeStringView),
+        ("headers", NativeStringView),
+        ("body", NativeStringView),
+        ("header_count", ctypes.c_size_t),
+        ("content_length", ctypes.c_size_t),
+        ("keep_alive", ctypes.c_int),
+    ]
+
+
 class NativeIsolateSpec(ctypes.Structure):
     _fields_ = [
         ("executable", ctypes.c_char_p),
@@ -110,17 +127,36 @@ class NativeRuntime:
         self.library.quickapi_arena_create.restype = ctypes.c_void_p
         self.library.quickapi_arena_alloc.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t]
         self.library.quickapi_arena_alloc.restype = NativeResult
+        self.library.quickapi_arena_alloc_zeroed.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t]
+        self.library.quickapi_arena_alloc_zeroed.restype = NativeResult
         self.library.quickapi_arena_used.argtypes = [ctypes.c_void_p]
         self.library.quickapi_arena_used.restype = ctypes.c_size_t
+        self.library.quickapi_arena_remaining.argtypes = [ctypes.c_void_p]
+        self.library.quickapi_arena_remaining.restype = ctypes.c_size_t
+        self.library.quickapi_arena_high_watermark.argtypes = [ctypes.c_void_p]
+        self.library.quickapi_arena_high_watermark.restype = ctypes.c_size_t
+        self.library.quickapi_arena_allocation_count.argtypes = [ctypes.c_void_p]
+        self.library.quickapi_arena_allocation_count.restype = ctypes.c_size_t
         self.library.quickapi_arena_destroy.argtypes = [ctypes.c_void_p]
         arena = self.library.quickapi_arena_create(capacity)
         if not arena:
             return {"ok": False, "error": "arena_create_failed"}
         first = self.library.quickapi_arena_alloc(arena, 64, 8)
-        second = self.library.quickapi_arena_alloc(arena, 128, 16)
+        second = self.library.quickapi_arena_alloc_zeroed(arena, 128, 16)
         used = int(self.library.quickapi_arena_used(arena))
+        remaining = int(self.library.quickapi_arena_remaining(arena))
+        high_watermark = int(self.library.quickapi_arena_high_watermark(arena))
+        allocation_count = int(self.library.quickapi_arena_allocation_count(arena))
         self.library.quickapi_arena_destroy(arena)
-        return {"ok": bool(first.ok and second.ok), "first_offset": int(first.value), "second_offset": int(second.value), "used": used}
+        return {
+            "ok": bool(first.ok and second.ok),
+            "first_offset": int(first.value),
+            "second_offset": int(second.value),
+            "used": used,
+            "remaining": remaining,
+            "high_watermark": high_watermark,
+            "allocation_count": allocation_count,
+        }
 
     def buffer_smoke(self, text: str = "quickapi") -> dict:
         self._require()
@@ -128,19 +164,25 @@ class NativeRuntime:
         self.library.quickapi_buffer_create.restype = ctypes.c_void_p
         self.library.quickapi_buffer_append_cstr.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
         self.library.quickapi_buffer_append_cstr.restype = NativeResult
+        self.library.quickapi_buffer_append_char.argtypes = [ctypes.c_void_p, ctypes.c_char]
+        self.library.quickapi_buffer_append_char.restype = NativeResult
         self.library.quickapi_buffer_data.argtypes = [ctypes.c_void_p]
         self.library.quickapi_buffer_data.restype = ctypes.c_char_p
         self.library.quickapi_buffer_size.argtypes = [ctypes.c_void_p]
         self.library.quickapi_buffer_size.restype = ctypes.c_size_t
+        self.library.quickapi_buffer_remaining.argtypes = [ctypes.c_void_p]
+        self.library.quickapi_buffer_remaining.restype = ctypes.c_size_t
         self.library.quickapi_buffer_destroy.argtypes = [ctypes.c_void_p]
         buffer = self.library.quickapi_buffer_create(8, 1024)
         if not buffer:
             return {"ok": False, "error": "buffer_create_failed"}
         result = self.library.quickapi_buffer_append_cstr(buffer, text.encode("utf-8"))
+        char_result = self.library.quickapi_buffer_append_char(buffer, b"!")
         data = self.library.quickapi_buffer_data(buffer).decode("utf-8")
         size = int(self.library.quickapi_buffer_size(buffer))
+        remaining = int(self.library.quickapi_buffer_remaining(buffer))
         self.library.quickapi_buffer_destroy(buffer)
-        return {"ok": bool(result.ok), "data": data, "size": size}
+        return {"ok": bool(result.ok and char_result.ok), "data": data, "size": size, "remaining": remaining}
 
     def job_queue_smoke(self) -> dict:
         self._require()
@@ -239,6 +281,35 @@ class NativeRuntime:
         self.library.quickapi_response_writer_destroy(writer)
         return {"ok": bool(status.ok and header.ok and body.ok), "size": size, "has_status": data.startswith("HTTP/1.1 200")}
 
+    def http_parse_smoke(self) -> dict:
+        self._require()
+        self.library.quickapi_http_parse_request.argtypes = [ctypes.c_char_p, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_size_t]
+        self.library.quickapi_http_parse_request.restype = NativeHttpParse
+        self.library.quickapi_http_header_value.argtypes = [NativeHttpParse, ctypes.c_char_p]
+        self.library.quickapi_http_header_value.restype = NativeStringView
+        self.library.quickapi_http_request_should_keep_alive.argtypes = [NativeHttpParse]
+        self.library.quickapi_http_request_should_keep_alive.restype = ctypes.c_int
+        raw = (
+            b"POST /api/checkout?dry_run=1 HTTP/1.1\r\n"
+            b"Host: 127.0.0.1:8080\r\n"
+            b"Content-Type: application/json\r\n"
+            b"Connection: keep-alive\r\n"
+            b"Content-Length: 13\r\n"
+            b"\r\n"
+            b"{\"ok\":true}"
+        )
+        parsed = self.library.quickapi_http_parse_request(raw, len(raw), 32, 1024 * 1024)
+        content_type = self.library.quickapi_http_header_value(parsed, b"Content-Type")
+        return {
+            "ok": bool(parsed.ok),
+            "method": ctypes.string_at(parsed.method.data, parsed.method.size).decode("utf-8") if parsed.method.data else "",
+            "path": ctypes.string_at(parsed.path.data, parsed.path.size).decode("utf-8") if parsed.path.data else "",
+            "query": ctypes.string_at(parsed.query.data, parsed.query.size).decode("utf-8") if parsed.query.data else "",
+            "content_type": ctypes.string_at(content_type.data, content_type.size).decode("utf-8") if content_type.data else "",
+            "body_size": int(parsed.body.size),
+            "keep_alive": bool(self.library.quickapi_http_request_should_keep_alive(parsed)),
+        }
+
     def route_match_smoke(self) -> dict:
         self._require()
         self.library.quickapi_router_create.restype = ctypes.c_void_p
@@ -270,6 +341,15 @@ class NativeRuntime:
 
     def security_scan_smoke(self) -> dict:
         self._require()
+        self.library.quickapi_security_fast_scan.argtypes = [
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+            ctypes.c_size_t,
+            ctypes.c_size_t,
+            ctypes.c_char_p,
+        ]
+        self.library.quickapi_security_fast_scan.restype = ctypes.c_uint
         self.library.quickapi_security_scan_request.argtypes = [
             ctypes.c_char_p,
             ctypes.c_char_p,
@@ -287,7 +367,20 @@ class NativeRuntime:
             1024 * 1024,
             b"{\"note\":\"drop table users\"}",
         )
-        return json.loads(raw.decode("utf-8"))
+        payload = b"{\"note\":\"drop table users\"}"
+        fast_flags = int(
+            self.library.quickapi_security_fast_scan(
+                b"POST",
+                b"/checkout",
+                b"application/json",
+                len(payload),
+                1024 * 1024,
+                payload,
+            )
+        )
+        data = json.loads(raw.decode("utf-8"))
+        data["fast_flags"] = fast_flags
+        return data
 
     def isolate_plan(self, executable: str = "worker", working_directory: str = ".", timeout_ms: int = 1000, memory_limit_mb: int = 128) -> dict:
         self._require()
@@ -316,6 +409,7 @@ class NativeRuntime:
                 "file_streamer": True,
                 "request_view": self.request_view_smoke()["ok"],
                 "response_writer": self.response_writer_smoke()["ok"],
+                "http_parser": self.http_parse_smoke()["ok"],
                 "route_matcher": self.route_match_smoke()["ok"],
                 "request_scanner": self.security_scan_smoke()["allowed"] is False,
                 "isolate_plan": self.isolate_plan()["valid"] is True,

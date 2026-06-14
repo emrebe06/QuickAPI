@@ -33,7 +33,13 @@ def test_native_arena_buffer_and_job_queue(runtime):
 
     assert arena["ok"] is True
     assert arena["used"] >= 192
-    assert buffer == {"ok": True, "data": "quickapi", "size": 8}
+    assert arena["remaining"] <= 512 - 192
+    assert arena["high_watermark"] == arena["used"]
+    assert arena["allocation_count"] == 2
+    assert buffer["ok"] is True
+    assert buffer["data"] == "quickapi!"
+    assert buffer["size"] == 9
+    assert buffer["remaining"] > 0
     assert queue == {"ok": True, "popped": 42, "size": 0}
 
 
@@ -77,6 +83,7 @@ def test_native_request_response_and_isolate_primitives(runtime):
     assert route["ok"] is True
     assert route["params"] == {"id": "42"}
     assert scan["allowed"] is False
+    assert scan["fast_flags"] > 0
     assert "suspicious_payload" in scan["reasons"]
     assert isolate["valid"] is True
     assert isolate["mode"] == "planned_isolated_worker"

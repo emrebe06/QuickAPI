@@ -15,9 +15,14 @@ QUICKAPI_EXPORT quickapi_arena* quickapi_arena_create(size_t capacity);
 QUICKAPI_EXPORT void quickapi_arena_destroy(quickapi_arena* arena);
 QUICKAPI_EXPORT void quickapi_arena_reset(quickapi_arena* arena);
 QUICKAPI_EXPORT quickapi_result quickapi_arena_alloc(quickapi_arena* arena, size_t size, size_t alignment);
+QUICKAPI_EXPORT quickapi_result quickapi_arena_alloc_zeroed(quickapi_arena* arena, size_t size, size_t alignment);
 QUICKAPI_EXPORT size_t quickapi_arena_used(const quickapi_arena* arena);
 QUICKAPI_EXPORT size_t quickapi_arena_capacity(const quickapi_arena* arena);
+QUICKAPI_EXPORT size_t quickapi_arena_remaining(const quickapi_arena* arena);
+QUICKAPI_EXPORT size_t quickapi_arena_high_watermark(const quickapi_arena* arena);
+QUICKAPI_EXPORT size_t quickapi_arena_allocation_count(const quickapi_arena* arena);
 QUICKAPI_EXPORT void* quickapi_arena_ptr(quickapi_arena* arena, size_t offset);
+QUICKAPI_EXPORT void* quickapi_arena_alloc_ptr(quickapi_arena* arena, size_t size, size_t alignment);
 
 #ifdef __cplusplus
 }

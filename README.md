@@ -168,6 +168,38 @@ def add_cart(body, ml):
     return q.ok({"product_id": product_id, "quantity": quantity})
 ```
 
+## Auth And Validation
+
+Routes can require a bearer token and validate path, query, and JSON body input before the handler runs:
+
+```python
+from quickapi import QuickAPI, q
+
+app = QuickAPI("Admin API", auth_tokens={"secret-token"})
+
+
+@app.post(
+    "/products/{product_id}",
+    auth=True,
+    tags=["products"],
+    summary="Update product",
+    path_schema={"product_id": str},
+    query_schema={"dry_run": (bool,)},
+    body_schema={
+        "name": {"type": "string", "min_length": 3},
+        "price": {"type": "number", "minimum": 1},
+        "stock": {"type": "integer", "minimum": 0},
+    },
+    errors=[401, 403, 422],
+)
+def update_product(product_id, body, auth):
+    return q.ok({"product_id": product_id, "updated": body, "auth": auth["method"]})
+```
+
+Missing auth returns `401`, invalid tokens return `403`, and invalid request fields return `422` with a `where` pointer such as `body.price` or `headers.Authorization`.
+
+The same route metadata is exported through `/openapi.json`, including bearer auth, path/query parameters, JSON request bodies, tags, summaries, and declared error responses.
+
 ## ML Guard Example
 
 ```python
@@ -263,7 +295,13 @@ cmake -S quickapi/native -B build/native
 cmake --build build/native --config Release
 ```
 
-Native hotpath helpers are also available through `NativeRuntime` for payload feature count, risk score, and stable request fingerprints.
+Native hot-path benchmark:
+
+```bash
+build/native/Release/quickapi_native_bench.exe 200000 250
+```
+
+Native hotpath helpers are also available through `NativeRuntime` for payload feature count, risk score, stable request fingerprints, raw HTTP parsing, response writing, and listener-style parse/security/route/response exchange primitives.
 
 ## Native Runtime Foundation
 
@@ -275,6 +313,7 @@ QuickAPI now ships a larger C/C++ foundation under `quickapi/native`. Python rem
 - `quickapi_result` for stable native error/result returns
 - native request and response view primitives
 - native JSON success response writer
+- native HTTP parser and listener exchange primitives
 - native security scanner hotpath helpers
 - chunked native file streamer primitives
 - bounded native job queue worker primitives

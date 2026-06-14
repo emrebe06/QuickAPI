@@ -27,6 +27,9 @@ class Router:
             return q.method_not_allowed(detail={"allowed": allowed})
         if route is None:
             return q.not_found(detail=f"No route found for {request.method} {request.path}")
+        return self.dispatch_route(route, request, path_params, ml_result)
+
+    def dispatch_route(self, route: Route, request, path_params: dict[str, str], ml_result=None):
         return self._call_route(route, request, path_params, ml_result)
 
     def _call_route(self, route: Route, request, path_params: dict[str, str], ml_result=None):
@@ -41,6 +44,8 @@ class Router:
                 kwargs[name] = request.headers
             elif name == "request":
                 kwargs[name] = request
+            elif name == "auth":
+                kwargs[name] = request.auth
             elif name == "ml":
                 kwargs[name] = ml_result
             elif name in path_params:

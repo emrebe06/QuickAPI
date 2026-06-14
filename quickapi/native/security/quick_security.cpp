@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstring>
 #include <sstream>
 #include <string>
 #include <set>
@@ -9,6 +10,19 @@
 
 namespace {
 thread_local std::string quick_security_reason;
+
+enum FastScanFlags {
+    QUICKAPI_SCAN_OK = 0,
+    QUICKAPI_SCAN_UNSUPPORTED_METHOD = 1u << 0,
+    QUICKAPI_SCAN_BODY_TOO_LARGE = 1u << 1,
+    QUICKAPI_SCAN_INVALID_CONTENT_TYPE = 1u << 2,
+    QUICKAPI_SCAN_INVALID_PATH = 1u << 3,
+    QUICKAPI_SCAN_CONTROL_CHARACTER = 1u << 4,
+    QUICKAPI_SCAN_TRAVERSAL = 1u << 5,
+    QUICKAPI_SCAN_SCRIPT = 1u << 6,
+    QUICKAPI_SCAN_SQL = 1u << 7,
+    QUICKAPI_SCAN_MULTI_SIGNAL = 1u << 8,
+};
 
 std::string lower_text(const char* value) {
     std::string text = value == nullptr ? "" : value;
@@ -55,6 +69,19 @@ bool supported_method(const std::string& method) {
     return methods.find(method) != methods.end();
 }
 
+bool supported_method_fast(const char* method) {
+    if (!method) {
+        return false;
+    }
+    return std::strcmp(method, "GET") == 0
+        || std::strcmp(method, "POST") == 0
+        || std::strcmp(method, "PUT") == 0
+        || std::strcmp(method, "PATCH") == 0
+        || std::strcmp(method, "DELETE") == 0
+        || std::strcmp(method, "OPTIONS") == 0
+        || std::strcmp(method, "HEAD") == 0;
+}
+
 std::string upper_text(const char* value) {
     std::string text = value == nullptr ? "" : value;
     std::transform(text.begin(), text.end(), text.begin(), [](unsigned char ch) { return static_cast<char>(std::toupper(ch)); });
@@ -79,6 +106,36 @@ bool looks_encoded_traversal(const std::string& value) {
 
 bool content_type_required(const std::string& method, size_t body_size) {
     return body_size > 0 && method != "GET" && method != "HEAD" && method != "OPTIONS";
+}
+
+bool ascii_contains_ci(const char* haystack, const char* needle) {
+    if (!haystack || !needle || !*needle) {
+        return false;
+    }
+    for (const char* h = haystack; *h; ++h) {
+        const char* a = h;
+        const char* b = needle;
+        while (*a && *b && std::tolower(static_cast<unsigned char>(*a)) == std::tolower(static_cast<unsigned char>(*b))) {
+            ++a;
+            ++b;
+        }
+        if (!*b) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool has_control_chars_cstr(const char* value) {
+    if (!value) {
+        return false;
+    }
+    for (const unsigned char* cursor = reinterpret_cast<const unsigned char*>(value); *cursor; ++cursor) {
+        if (*cursor < 32 && *cursor != '\t' && *cursor != '\n' && *cursor != '\r') {
+            return true;
+        }
+    }
+    return false;
 }
 
 std::string json_escape(const std::string& value) {
@@ -218,6 +275,66 @@ double quickapi_security_payload_risk_score(const char* path, const char* payloa
 unsigned long long quickapi_security_fingerprint(const char* path, const char* payload) {
     quick_security_reason.clear();
     return fnv1a(lower_text(path) + "\n" + lower_text(payload));
+}
+
+unsigned int quickapi_security_fast_scan(
+    const char* method,
+    const char* path,
+    const char* content_type,
+    size_t body_size,
+    size_t max_body_size,
+    const char* payload
+) {
+    unsigned int flags = QUICKAPI_SCAN_OK;
+    if (!supported_method_fast(method)) {
+        flags |= QUICKAPI_SCAN_UNSUPPORTED_METHOD;
+    }
+    if (!quickapi_security_body_allowed(body_size, max_body_size)) {
+        flags |= QUICKAPI_SCAN_BODY_TOO_LARGE;
+    }
+    bool needs_json = body_size > 0
+        && method
+        && std::strcmp(method, "GET") != 0
+        && std::strcmp(method, "HEAD") != 0
+        && std::strcmp(method, "OPTIONS") != 0;
+    if (needs_json && !quickapi_security_content_type_json(content_type)) {
+        flags |= QUICKAPI_SCAN_INVALID_CONTENT_TYPE;
+    }
+    if (!path || path[0] != '/') {
+        flags |= QUICKAPI_SCAN_INVALID_PATH;
+    }
+    if (has_control_chars_cstr(path) || has_control_chars_cstr(payload)) {
+        flags |= QUICKAPI_SCAN_CONTROL_CHARACTER;
+    }
+    if (ascii_contains_ci(path, "..")
+        || ascii_contains_ci(path, "%2e")
+        || ascii_contains_ci(path, "%2f")
+        || ascii_contains_ci(path, "\\")
+        || ascii_contains_ci(payload, "../")
+        || ascii_contains_ci(payload, "..\\")
+        || ascii_contains_ci(payload, "%2e")) {
+        flags |= QUICKAPI_SCAN_TRAVERSAL;
+    }
+    if (ascii_contains_ci(path, "<script")
+        || ascii_contains_ci(payload, "<script")
+        || ascii_contains_ci(payload, "javascript:")) {
+        flags |= QUICKAPI_SCAN_SCRIPT;
+    }
+    if (ascii_contains_ci(payload, "drop table")
+        || ascii_contains_ci(payload, "union select")
+        || ascii_contains_ci(payload, " or 1=1")
+        || ascii_contains_ci(payload, "'--")
+        || ascii_contains_ci(payload, "\"--")) {
+        flags |= QUICKAPI_SCAN_SQL;
+    }
+    unsigned int signal_count = 0;
+    for (unsigned int mask = flags; mask; mask >>= 1u) {
+        signal_count += mask & 1u;
+    }
+    if (signal_count >= 3) {
+        flags |= QUICKAPI_SCAN_MULTI_SIGNAL;
+    }
+    return flags;
 }
 
 int quickapi_security_request_allowed(

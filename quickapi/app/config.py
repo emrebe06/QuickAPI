@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Callable, Any
 
 
 @dataclass
@@ -14,3 +15,5 @@ class QuickAPIConfig:
     max_body_size: int = 1024 * 1024
     job_workers: int = 4
     native_library: str | None = None
+    auth_tokens: set[str] | tuple[str, ...] | list[str] | None = None
+    auth_validator: Callable[[str, Any], bool | dict] | None = None

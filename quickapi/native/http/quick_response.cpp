@@ -1,6 +1,7 @@
 #include "quick_response.h"
 #include "quick_http.h"
 
+#include <cstring>
 #include <string>
 
 struct quickapi_response_writer {
@@ -26,6 +27,14 @@ void quickapi_response_writer_destroy(quickapi_response_writer* writer) {
     if (!writer) return;
     quickapi_buffer_destroy(writer->buffer);
     delete writer;
+}
+
+void quickapi_response_writer_reset(quickapi_response_writer* writer) {
+    if (!writer || !writer->buffer) {
+        return;
+    }
+    writer->status = 200;
+    quickapi_buffer_clear(writer->buffer);
 }
 
 quickapi_result quickapi_response_writer_status(quickapi_response_writer* writer, int status) {
@@ -66,6 +75,42 @@ quickapi_result quickapi_response_writer_body(quickapi_response_writer* writer, 
     quickapi_result result = quickapi_buffer_append_cstr(writer->buffer, "\r\n");
     if (!result.ok) return result;
     return quickapi_buffer_append(writer->buffer, data, size);
+}
+
+quickapi_result quickapi_response_writer_json(quickapi_response_writer* writer, int status, const char* json_body, int keep_alive) {
+    if (!writer || !writer->buffer) {
+        return quickapi_result_error(QUICKAPI_ERROR_INVALID_ARGUMENT, "invalid response writer");
+    }
+    const char* body = json_body ? json_body : "null";
+    size_t body_size = std::strlen(body);
+    quickapi_result result = quickapi_response_writer_status(writer, status);
+    if (!result.ok) return result;
+    result = quickapi_response_writer_header(writer, "Content-Type", "application/json; charset=utf-8");
+    if (!result.ok) return result;
+    std::string length = std::to_string(body_size);
+    result = quickapi_response_writer_header(writer, "Content-Length", length.c_str());
+    if (!result.ok) return result;
+    result = quickapi_response_writer_header(writer, "Connection", keep_alive ? "keep-alive" : "close");
+    if (!result.ok) return result;
+    return quickapi_response_writer_body(writer, body, body_size);
+}
+
+quickapi_result quickapi_response_writer_error_json(quickapi_response_writer* writer, int status, const char* code, const char* message, int keep_alive) {
+    if (!writer || !writer->buffer) {
+        return quickapi_result_error(QUICKAPI_ERROR_INVALID_ARGUMENT, "invalid response writer");
+    }
+    const char* safe_code = code ? code : quickapi_http_status_code_name(status);
+    const char* safe_message = message ? message : quickapi_http_status_message(status);
+    std::string body = "{\"ok\":false,\"status\":";
+    body += std::to_string(status);
+    body += ",\"code\":\"";
+    body += safe_code;
+    body += "\",\"message\":\"";
+    body += safe_message;
+    body += "\",\"data\":null,\"error\":{\"type\":\"native_http_error\",\"detail\":\"";
+    body += safe_message;
+    body += "\"},\"meta\":{\"engine\":\"quickapi-native\"}}";
+    return quickapi_response_writer_json(writer, status, body.c_str(), keep_alive);
 }
 
 const char* quickapi_response_writer_data(const quickapi_response_writer* writer) {

@@ -11,6 +11,7 @@ add_library(quickapi_native SHARED
     core/quick_buffer.cpp
     core/quick_string.cpp
     http/quick_http.cpp
+    http/quick_listener.cpp
     http/quick_file_stream.cpp
     http/quick_request.cpp
     http/quick_response.cpp
@@ -28,6 +29,12 @@ target_include_directories(quickapi_native PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/core
 )
+
+add_executable(quickapi_native_bench
+    bench/quick_native_bench.cpp
+)
+
+target_link_libraries(quickapi_native_bench PRIVATE quickapi_native)
 
 if(NOT WIN32)
     target_link_libraries(quickapi_native PRIVATE dl)

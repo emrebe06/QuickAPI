@@ -14,6 +14,7 @@ class Request:
     ip: str = "127.0.0.1"
     request_id: str | None = None
     raw_body: bytes = b""
+    auth: dict[str, Any] | None = None
 
     @classmethod
     def build(
