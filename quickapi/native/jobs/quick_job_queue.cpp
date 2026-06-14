@@ -1,6 +1,7 @@
 #include "quick_job_queue.h"
 
 #include <cstdlib>
+#include <mutex>
 #include <new>
 
 struct quickapi_job_queue {
@@ -9,6 +10,7 @@ struct quickapi_job_queue {
     size_t head;
     size_t tail;
     size_t size;
+    mutable std::mutex lock;
 };
 
 quickapi_job_queue* quickapi_job_queue_create(size_t capacity) {
@@ -37,6 +39,7 @@ quickapi_result quickapi_job_queue_push(quickapi_job_queue* queue, unsigned long
     if (!queue || !queue->values) {
         return quickapi_result_error(QUICKAPI_ERROR_INVALID_ARGUMENT, "invalid job queue");
     }
+    std::lock_guard<std::mutex> guard(queue->lock);
     if (queue->size >= queue->capacity) {
         return quickapi_result_error(QUICKAPI_ERROR_LIMIT_EXCEEDED, "job queue is full");
     }
@@ -50,6 +53,7 @@ quickapi_result quickapi_job_queue_pop(quickapi_job_queue* queue) {
     if (!queue || !queue->values) {
         return quickapi_result_error(QUICKAPI_ERROR_INVALID_ARGUMENT, "invalid job queue");
     }
+    std::lock_guard<std::mutex> guard(queue->lock);
     if (queue->size == 0) {
         return quickapi_result_error(QUICKAPI_ERROR_NOT_FOUND, "job queue is empty");
     }
@@ -61,9 +65,23 @@ quickapi_result quickapi_job_queue_pop(quickapi_job_queue* queue) {
 }
 
 size_t quickapi_job_queue_size(const quickapi_job_queue* queue) {
-    return queue ? queue->size : 0;
+    if (!queue) return 0;
+    std::lock_guard<std::mutex> guard(queue->lock);
+    return queue->size;
 }
 
 size_t quickapi_job_queue_capacity(const quickapi_job_queue* queue) {
     return queue ? queue->capacity : 0;
+}
+
+int quickapi_job_queue_is_full(const quickapi_job_queue* queue) {
+    if (!queue || queue->capacity == 0) return 0;
+    std::lock_guard<std::mutex> guard(queue->lock);
+    return queue->size >= queue->capacity ? 1 : 0;
+}
+
+double quickapi_job_queue_load_factor(const quickapi_job_queue* queue) {
+    if (!queue || queue->capacity == 0) return 0.0;
+    std::lock_guard<std::mutex> guard(queue->lock);
+    return static_cast<double>(queue->size) / static_cast<double>(queue->capacity);
 }

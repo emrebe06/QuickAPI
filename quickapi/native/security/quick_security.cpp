@@ -22,6 +22,10 @@ enum FastScanFlags {
     QUICKAPI_SCAN_SCRIPT = 1u << 6,
     QUICKAPI_SCAN_SQL = 1u << 7,
     QUICKAPI_SCAN_MULTI_SIGNAL = 1u << 8,
+    QUICKAPI_SCAN_COMMAND = 1u << 9,
+    QUICKAPI_SCAN_SSRF = 1u << 10,
+    QUICKAPI_SCAN_PROBE = 1u << 11,
+    QUICKAPI_SCAN_DANGEROUS_UPLOAD = 1u << 12,
 };
 
 std::string lower_text(const char* value) {
@@ -51,7 +55,9 @@ unsigned long long fnv1a(const std::string& value) {
 
 unsigned int count_features(const std::string& value) {
     static const std::vector<std::string> tokens = {
-        "<script", "javascript:", "drop table", "union select", "../", "..\\", "%2e", "%2f", "'--", "\"--", " or 1=1"
+        "<script", "javascript:", "drop table", "union select", "../", "..\\", "%2e", "%2f", "'--", "\"--", " or 1=1",
+        "xp_cmdshell", "powershell", "/bin/sh", "cmd.exe", "curl http", "wget http", "169.254.169.254",
+        ".php", ".phtml", ".asp", ".aspx", ".jsp", ".exe", ".bat", ".ps1"
     };
     unsigned int hits = 0;
     for (const std::string& token : tokens) {
@@ -215,10 +221,62 @@ std::vector<std::string> scan_reasons(
     if (quickapi_security_payload_suspicious(payload)) {
         reasons.push_back("suspicious_payload");
     }
+    if (ascii_contains_ci(payload, "xp_cmdshell")
+        || ascii_contains_ci(payload, "powershell")
+        || ascii_contains_ci(payload, "cmd.exe")
+        || ascii_contains_ci(payload, "/bin/sh")
+        || ascii_contains_ci(payload, "&&")
+        || ascii_contains_ci(payload, "|")) {
+        reasons.push_back("command_injection");
+    }
+    if (ascii_contains_ci(payload, "169.254.169.254")
+        || ascii_contains_ci(payload, "metadata.google.internal")
+        || ascii_contains_ci(payload, "localhost:")
+        || ascii_contains_ci(payload, "127.0.0.1:")
+        || ascii_contains_ci(payload, "file://")) {
+        reasons.push_back("ssrf_probe");
+    }
+    if (ascii_contains_ci(path, "/.env")
+        || ascii_contains_ci(path, "/wp-admin")
+        || ascii_contains_ci(path, "/phpmyadmin")
+        || ascii_contains_ci(path, "/server-status")
+        || ascii_contains_ci(path, "/actuator")) {
+        reasons.push_back("scanner_probe");
+    }
+    if (ascii_contains_ci(payload, ".php")
+        || ascii_contains_ci(payload, ".phtml")
+        || ascii_contains_ci(payload, ".asp")
+        || ascii_contains_ci(payload, ".aspx")
+        || ascii_contains_ci(payload, ".jsp")
+        || ascii_contains_ci(payload, ".exe")
+        || ascii_contains_ci(payload, ".bat")
+        || ascii_contains_ci(payload, ".ps1")) {
+        reasons.push_back("dangerous_upload_name");
+    }
     if (count_features(path_text + " " + payload_text) >= 3) {
         reasons.push_back("multi_signal_payload");
     }
     return reasons;
+}
+
+std::string flags_to_json(unsigned int flags) {
+    std::vector<std::string> reasons;
+    if (flags & QUICKAPI_SCAN_UNSUPPORTED_METHOD) reasons.push_back("unsupported_method");
+    if (flags & QUICKAPI_SCAN_BODY_TOO_LARGE) reasons.push_back("body_too_large");
+    if (flags & QUICKAPI_SCAN_INVALID_CONTENT_TYPE) reasons.push_back("invalid_content_type");
+    if (flags & QUICKAPI_SCAN_INVALID_PATH) reasons.push_back("invalid_path");
+    if (flags & QUICKAPI_SCAN_CONTROL_CHARACTER) reasons.push_back("control_character");
+    if (flags & QUICKAPI_SCAN_TRAVERSAL) reasons.push_back("path_traversal");
+    if (flags & QUICKAPI_SCAN_SCRIPT) reasons.push_back("script_injection");
+    if (flags & QUICKAPI_SCAN_SQL) reasons.push_back("sql_injection");
+    if (flags & QUICKAPI_SCAN_MULTI_SIGNAL) reasons.push_back("multi_signal");
+    if (flags & QUICKAPI_SCAN_COMMAND) reasons.push_back("command_injection");
+    if (flags & QUICKAPI_SCAN_SSRF) reasons.push_back("ssrf_probe");
+    if (flags & QUICKAPI_SCAN_PROBE) reasons.push_back("scanner_probe");
+    if (flags & QUICKAPI_SCAN_DANGEROUS_UPLOAD) reasons.push_back("dangerous_upload_name");
+    std::ostringstream out;
+    out << "{\"flags\":" << flags << ",\"ok\":" << (flags == 0 ? "true" : "false") << ",\"signals\":" << reasons_json(reasons) << "}";
+    return out.str();
 }
 }
 
@@ -323,9 +381,41 @@ unsigned int quickapi_security_fast_scan(
     if (ascii_contains_ci(payload, "drop table")
         || ascii_contains_ci(payload, "union select")
         || ascii_contains_ci(payload, " or 1=1")
+        || ascii_contains_ci(payload, "xp_cmdshell")
         || ascii_contains_ci(payload, "'--")
         || ascii_contains_ci(payload, "\"--")) {
         flags |= QUICKAPI_SCAN_SQL;
+    }
+    if (ascii_contains_ci(payload, "powershell")
+        || ascii_contains_ci(payload, "cmd.exe")
+        || ascii_contains_ci(payload, "/bin/sh")
+        || ascii_contains_ci(payload, "&&")
+        || ascii_contains_ci(payload, "|")) {
+        flags |= QUICKAPI_SCAN_COMMAND;
+    }
+    if (ascii_contains_ci(payload, "169.254.169.254")
+        || ascii_contains_ci(payload, "metadata.google.internal")
+        || ascii_contains_ci(payload, "localhost:")
+        || ascii_contains_ci(payload, "127.0.0.1:")
+        || ascii_contains_ci(payload, "file://")) {
+        flags |= QUICKAPI_SCAN_SSRF;
+    }
+    if (ascii_contains_ci(path, "/.env")
+        || ascii_contains_ci(path, "/wp-admin")
+        || ascii_contains_ci(path, "/phpmyadmin")
+        || ascii_contains_ci(path, "/server-status")
+        || ascii_contains_ci(path, "/actuator")) {
+        flags |= QUICKAPI_SCAN_PROBE;
+    }
+    if (ascii_contains_ci(payload, ".php")
+        || ascii_contains_ci(payload, ".phtml")
+        || ascii_contains_ci(payload, ".asp")
+        || ascii_contains_ci(payload, ".aspx")
+        || ascii_contains_ci(payload, ".jsp")
+        || ascii_contains_ci(payload, ".exe")
+        || ascii_contains_ci(payload, ".bat")
+        || ascii_contains_ci(payload, ".ps1")) {
+        flags |= QUICKAPI_SCAN_DANGEROUS_UPLOAD;
     }
     unsigned int signal_count = 0;
     for (unsigned int mask = flags; mask; mask >>= 1u) {
@@ -377,6 +467,11 @@ const char* quickapi_security_scan_request(
     out << "\"fingerprint\":" << quickapi_security_fingerprint(path, payload);
     out << "}";
     quick_security_reason = out.str();
+    return quick_security_reason.c_str();
+}
+
+const char* quickapi_security_flags_json(unsigned int flags) {
+    quick_security_reason = flags_to_json(flags);
     return quick_security_reason.c_str();
 }
 

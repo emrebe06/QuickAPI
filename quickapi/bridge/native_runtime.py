@@ -52,6 +52,16 @@ class NativeIsolateSpec(ctypes.Structure):
     ]
 
 
+class NativePluginManifest(ctypes.Structure):
+    _fields_ = [
+        ("name", ctypes.c_char_p),
+        ("version", ctypes.c_char_p),
+        ("permissions", ctypes.c_uint),
+        ("max_runtime_ms", ctypes.c_uint),
+        ("max_memory_mb", ctypes.c_uint),
+    ]
+
+
 class NativeRuntime:
     def __init__(self, library: str | None = None):
         self.library_path = library
@@ -194,15 +204,35 @@ class NativeRuntime:
         self.library.quickapi_job_queue_pop.restype = NativeResult
         self.library.quickapi_job_queue_size.argtypes = [ctypes.c_void_p]
         self.library.quickapi_job_queue_size.restype = ctypes.c_size_t
+        try:
+            self.library.quickapi_job_queue_load_factor.argtypes = [ctypes.c_void_p]
+            self.library.quickapi_job_queue_load_factor.restype = ctypes.c_double
+            self.library.quickapi_job_queue_is_full.argtypes = [ctypes.c_void_p]
+            self.library.quickapi_job_queue_is_full.restype = ctypes.c_int
+        except AttributeError:
+            pass
         self.library.quickapi_job_queue_destroy.argtypes = [ctypes.c_void_p]
         queue = self.library.quickapi_job_queue_create(4)
         if not queue:
             return {"ok": False, "error": "queue_create_failed"}
         pushed = self.library.quickapi_job_queue_push(queue, 42)
+        load_after_push = None
+        is_full = None
+        try:
+            load_after_push = float(self.library.quickapi_job_queue_load_factor(queue))
+            is_full = bool(self.library.quickapi_job_queue_is_full(queue))
+        except AttributeError:
+            pass
         popped = self.library.quickapi_job_queue_pop(queue)
         size = int(self.library.quickapi_job_queue_size(queue))
         self.library.quickapi_job_queue_destroy(queue)
-        return {"ok": bool(pushed.ok and popped.ok), "popped": int(popped.value), "size": size}
+        return {
+            "ok": bool(pushed.ok and popped.ok),
+            "popped": int(popped.value),
+            "size": size,
+            "load_after_push": load_after_push,
+            "is_full_after_push": is_full,
+        }
 
     def file_stream_smoke(self, path: str, chunk_size: int = 1024 * 64) -> dict:
         self._require()
@@ -382,6 +412,134 @@ class NativeRuntime:
         data["fast_flags"] = fast_flags
         return data
 
+    def plugin_manifest_smoke(self) -> dict:
+        self._require()
+        try:
+            self.library.quickapi_plugin_permission_from_name.argtypes = [ctypes.c_char_p]
+            self.library.quickapi_plugin_permission_from_name.restype = ctypes.c_uint
+            self.library.quickapi_plugin_manifest_json.argtypes = [NativePluginManifest]
+            self.library.quickapi_plugin_manifest_json.restype = ctypes.c_char_p
+            network = int(self.library.quickapi_plugin_permission_from_name(b"network"))
+            llm = int(self.library.quickapi_plugin_permission_from_name(b"llm"))
+            manifest = NativePluginManifest(b"llm-gateway", b"0.1.0", network | llm, 30000, 256)
+            return json.loads(self.library.quickapi_plugin_manifest_json(manifest).decode("utf-8"))
+        except AttributeError:
+            return {"valid": False, "reason": "native plugin policy symbols unavailable"}
+
+    def policy_decision(self, risk_score: float, security_flags: int = 0, route_sensitivity: int = 0) -> dict:
+        self._require()
+        try:
+            self.library.quickapi_policy_decision_json.argtypes = [ctypes.c_double, ctypes.c_uint, ctypes.c_uint]
+            self.library.quickapi_policy_decision_json.restype = ctypes.c_char_p
+            return json.loads(
+                self.library.quickapi_policy_decision_json(
+                    float(risk_score),
+                    int(security_flags),
+                    int(route_sensitivity),
+                ).decode("utf-8")
+            )
+        except AttributeError:
+            if risk_score >= 0.88:
+                action = "block"
+            elif risk_score >= 0.72 or security_flags:
+                action = "challenge"
+            elif risk_score >= 0.45:
+                action = "observe"
+            else:
+                action = "allow"
+            return {
+                "action": action,
+                "risk_score": risk_score,
+                "security_flags": security_flags,
+                "route_sensitivity": route_sensitivity,
+                "engine": "python-policy-fallback",
+            }
+
+    def security_scan(self, method: str, path: str, content_type: str = "", body_size: int = 0, max_body_size: int = 1024 * 1024, payload: str = "") -> dict:
+        self._require()
+        self.library.quickapi_security_fast_scan.argtypes = [
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+            ctypes.c_size_t,
+            ctypes.c_size_t,
+            ctypes.c_char_p,
+        ]
+        self.library.quickapi_security_fast_scan.restype = ctypes.c_uint
+        self.library.quickapi_security_scan_request.argtypes = [
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+            ctypes.c_size_t,
+            ctypes.c_size_t,
+            ctypes.c_char_p,
+        ]
+        self.library.quickapi_security_scan_request.restype = ctypes.c_char_p
+        payload_bytes = payload.encode("utf-8", errors="ignore")
+        flags = int(
+            self.library.quickapi_security_fast_scan(
+                method.encode("utf-8"),
+                path.encode("utf-8"),
+                content_type.encode("utf-8"),
+                body_size,
+                max_body_size,
+                payload_bytes,
+            )
+        )
+        detail = json.loads(
+            self.library.quickapi_security_scan_request(
+                method.encode("utf-8"),
+                path.encode("utf-8"),
+                content_type.encode("utf-8"),
+                body_size,
+                max_body_size,
+                payload_bytes,
+            ).decode("utf-8")
+        )
+        try:
+            self.library.quickapi_security_flags_json.argtypes = [ctypes.c_uint]
+            self.library.quickapi_security_flags_json.restype = ctypes.c_char_p
+            flag_detail = json.loads(self.library.quickapi_security_flags_json(flags).decode("utf-8"))
+        except AttributeError:
+            flag_detail = {"flags": flags, "ok": flags == 0, "signals": []}
+        detail["fast_flags"] = flags
+        detail["signals"] = list(dict.fromkeys(detail.get("reasons", []) + flag_detail.get("signals", [])))
+        detail["engine"] = "native-security-v1"
+        return detail
+
+    def validation_scan(
+        self,
+        payload: bytes | str,
+        *,
+        max_depth: int = 12,
+        max_string_length: int = 4096,
+        max_array_length: int = 1000,
+        max_object_keys: int = 250,
+    ) -> dict:
+        self._require()
+        try:
+            self.library.quickapi_validation_payload_json.argtypes = [
+                ctypes.c_char_p,
+                ctypes.c_size_t,
+                ctypes.c_size_t,
+                ctypes.c_size_t,
+                ctypes.c_size_t,
+                ctypes.c_size_t,
+            ]
+            self.library.quickapi_validation_payload_json.restype = ctypes.c_char_p
+        except AttributeError:
+            return {"ok": True, "flags": 0, "signals": [], "engine": "native-validation-unavailable"}
+        payload_bytes = payload if isinstance(payload, bytes) else str(payload).encode("utf-8", errors="ignore")
+        raw = self.library.quickapi_validation_payload_json(
+            payload_bytes,
+            len(payload_bytes),
+            int(max_depth),
+            int(max_string_length),
+            int(max_array_length),
+            int(max_object_keys),
+        )
+        return json.loads(raw.decode("utf-8"))
+
     def isolate_plan(self, executable: str = "worker", working_directory: str = ".", timeout_ms: int = 1000, memory_limit_mb: int = 128) -> dict:
         self._require()
         self.library.quickapi_isolate_plan.argtypes = [NativeIsolateSpec]
@@ -412,6 +570,9 @@ class NativeRuntime:
                 "http_parser": self.http_parse_smoke()["ok"],
                 "route_matcher": self.route_match_smoke()["ok"],
                 "request_scanner": self.security_scan_smoke()["allowed"] is False,
+                "native_validation": self.validation_scan(b"{\"name\":\"quickapi\"}").get("ok") is True,
+                "plugin_policy": self.plugin_manifest_smoke().get("valid") is True,
+                "native_policy": self.policy_decision(0.5, 1, 2).get("action") in {"observe", "challenge", "block"},
                 "isolate_plan": self.isolate_plan()["valid"] is True,
                 "security_hotpath": self.payload_feature_count("drop table") >= 1,
             },

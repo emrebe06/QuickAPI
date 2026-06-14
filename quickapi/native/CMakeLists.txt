@@ -21,8 +21,11 @@ add_library(quickapi_native SHARED
     jobs/quick_job_queue.cpp
     loader/quick_native_loader.cpp
     metrics/quick_metrics.cpp
+    ml/quick_policy.cpp
+    plugins/quick_plugin.cpp
     router/quick_router.cpp
     security/quick_security.cpp
+    validation/quick_validation.cpp
 )
 
 target_include_directories(quickapi_native PUBLIC

@@ -17,6 +17,8 @@ QUICKAPI_EXPORT quickapi_result quickapi_job_queue_push(quickapi_job_queue* queu
 QUICKAPI_EXPORT quickapi_result quickapi_job_queue_pop(quickapi_job_queue* queue);
 QUICKAPI_EXPORT size_t quickapi_job_queue_size(const quickapi_job_queue* queue);
 QUICKAPI_EXPORT size_t quickapi_job_queue_capacity(const quickapi_job_queue* queue);
+QUICKAPI_EXPORT int quickapi_job_queue_is_full(const quickapi_job_queue* queue);
+QUICKAPI_EXPORT double quickapi_job_queue_load_factor(const quickapi_job_queue* queue);
 
 #ifdef __cplusplus
 }

@@ -11,12 +11,24 @@ class SecurityGuard:
         "\x00",
         "<script",
         "${",
+        "/.env",
+        "/wp-admin",
+        "/phpmyadmin",
+        "/server-status",
+        "/actuator",
     )
     SUSPICIOUS_BODY_TOKENS = (
         "<script",
         "javascript:",
         "drop table",
         "union select",
+        "xp_cmdshell",
+        "powershell",
+        "cmd.exe",
+        "/bin/sh",
+        "169.254.169.254",
+        "metadata.google.internal",
+        "file://",
         "../",
         "..\\",
         "\x00",
@@ -76,7 +88,7 @@ class SecurityGuard:
                     "where": "path",
                     "value": request.path,
                     "matched": token,
-                    "hint": "Do not send traversal, encoded slash/dot, script, or null-byte patterns in the path.",
+                    "hint": "Do not send traversal, scanner probe, encoded slash/dot, script, or null-byte patterns in the path.",
                 }
 
         for key, value in request.headers.items():
@@ -97,6 +109,6 @@ class SecurityGuard:
                 return {
                     "where": "body",
                     "matched": token,
-                    "hint": "JSON body contains a blocked script, SQL, traversal, or null-byte pattern.",
+                    "hint": "JSON body contains a blocked script, SQL, command, SSRF, traversal, or null-byte pattern.",
                 }
         return None

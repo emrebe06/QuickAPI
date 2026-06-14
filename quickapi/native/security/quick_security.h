@@ -39,6 +39,7 @@ QUICKAPI_EXPORT const char* quickapi_security_scan_request(
     size_t max_body_size,
     const char* payload
 );
+QUICKAPI_EXPORT const char* quickapi_security_flags_json(unsigned int flags);
 QUICKAPI_EXPORT const char* quickapi_security_last_reason(void);
 
 #ifdef __cplusplus

@@ -1,4 +1,6 @@
 import json
+import traceback
+from threading import BoundedSemaphore
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -19,6 +21,7 @@ class QuickListener:
         self.host = host
         self.port = port
         self.logger = AccessLogger(access_log)
+        self.in_flight = BoundedSemaphore(max(1, int(getattr(app.config, "max_in_flight", 512))))
 
     def serve(self):
         app = self.app
@@ -47,8 +50,68 @@ class QuickListener:
 
             def _quickapi_handle(self):
                 parsed = urlparse(self.path)
-                raw_body = self.rfile.read(int(self.headers.get("Content-Length", 0) or 0))
                 ip = self._client_ip()
+                if not self.server.quickapi_in_flight.acquire(blocking=False):
+                    response_body = q.service_unavailable(
+                        "Server is busy",
+                        {
+                            "where": "listener.in_flight",
+                            "hint": "Too many requests are being processed. Retry shortly.",
+                            "max_in_flight": getattr(app.config, "max_in_flight", 512),
+                        },
+                    )
+                    status = int(getattr(app.config, "overload_status", 503))
+                    response_body["status"] = status
+                    response = JSONResponse(response_body, status, headers=app.cors_headers())
+                    self._send(response)
+                    logger.request(self.command, parsed.path, response, ip)
+                    return
+
+                try:
+                    self.connection.settimeout(float(getattr(app.config, "request_timeout_seconds", 15.0)))
+                    content_length = int(self.headers.get("Content-Length", 0) or 0)
+                    max_body = int(getattr(app.config, "max_body_size", 1024 * 1024))
+                    if content_length > max_body:
+                        response_body = q.error(
+                            413,
+                            "PAYLOAD_TOO_LARGE",
+                            "Request body is too large",
+                            {"max_body_size": max_body, "content_length": content_length},
+                        )
+                        response = JSONResponse(response_body, 413, headers=app.cors_headers())
+                        self._send(response)
+                        logger.request(self.command, parsed.path, response, ip)
+                        return
+                    raw_body = self.rfile.read(content_length)
+                    self._handle_with_body(parsed, ip, raw_body)
+                except TimeoutError:
+                    response_body = q.service_unavailable(
+                        "Request timed out",
+                        {"where": "listener.read", "timeout_seconds": getattr(app.config, "request_timeout_seconds", 15.0)},
+                    )
+                    response = JSONResponse(response_body, 503, headers=app.cors_headers())
+                    self._send(response)
+                    logger.request(self.command, parsed.path, response, ip)
+                except Exception as exc:
+                    detail = {
+                        "exception": exc.__class__.__name__,
+                        "message": str(exc),
+                        "traceback": traceback.format_exc(limit=8),
+                        "hint": "Check the file and line shown in traceback, then restart or use --reload.",
+                    }
+                    print(f"[quickapi] handler error on {self.command} {parsed.path}: {exc}", flush=True)
+                    print(detail["traceback"], flush=True)
+                    response_body = q.server_error("Unhandled listener error", detail)
+                    response = JSONResponse(response_body, 500, headers=app.cors_headers())
+                    try:
+                        self._send(response)
+                    except Exception:
+                        pass
+                    logger.request(self.command, parsed.path, response, ip)
+                finally:
+                    self.server.quickapi_in_flight.release()
+
+            def _handle_with_body(self, parsed, ip: str, raw_body: bytes):
                 body = None
                 if raw_body:
                     try:
@@ -98,13 +161,20 @@ class QuickListener:
                 for key, value in response.headers.items():
                     self.send_header(key, value)
                 payload = None
+                stream_threshold = int(getattr(app.config, "json_stream_threshold", 1024 * 256))
                 if not hasattr(response, "iter_bytes"):
+                    payload = response.to_bytes()
+                    self.send_header("Content-Length", str(len(payload)))
+                elif isinstance(response, JSONResponse):
                     payload = response.to_bytes()
                     self.send_header("Content-Length", str(len(payload)))
                 self.send_header("Connection", "close")
                 self.end_headers()
                 if response.status != 204:
-                    if hasattr(response, "iter_bytes"):
+                    if isinstance(response, JSONResponse) and payload is not None and len(payload) >= stream_threshold:
+                        for chunk in response.iter_bytes():
+                            self.wfile.write(chunk)
+                    elif hasattr(response, "iter_bytes") and payload is None:
                         for chunk in response.iter_bytes():
                             self.wfile.write(chunk)
                     else:
@@ -115,6 +185,7 @@ class QuickListener:
 
         app.lifecycle.startup()
         server = QuickHTTPServer((self.host, self.port), Handler)
+        server.quickapi_in_flight = self.in_flight
         self.logger.startup(app.config.name, self.host, self.port)
         try:
             server.serve_forever()

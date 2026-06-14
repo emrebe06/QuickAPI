@@ -1,6 +1,7 @@
 import subprocess
 import sys
 import textwrap
+import os
 from pathlib import Path
 from time import perf_counter
 from time import sleep
@@ -9,7 +10,7 @@ from quickapi.cli.loader import load_app
 
 
 def dev(path: str, host: str = "127.0.0.1", port: int = 8080, access_log: bool = True):
-    run(path, host=host, port=port, access_log=access_log)
+    run(path, host=host, port=port, access_log=access_log, reload=True)
 
 
 def run(
@@ -129,11 +130,17 @@ def run_with_reload(target: str, host: str, port: int, access_log: bool):
     try:
         while True:
             if child is None or child.poll() is not None:
+                if child is not None and child.returncode not in (0, None):
+                    print(f"[quickapi] child stopped with exit code {child.returncode}", flush=True)
                 child = start_child(target, host, port, access_log)
             sleep(1)
+            watched = watched_files(target)
             current = snapshot(watched)
             if current != last:
+                changed = changed_files(last, current)
                 print("[quickapi] reload: Python file change detected", flush=True)
+                for path in changed[:8]:
+                    print(f"[quickapi]   changed: {path}", flush=True)
                 stop_child(child)
                 child = start_child(target, host, port, access_log)
                 last = current
@@ -145,6 +152,7 @@ def run_with_reload(target: str, host: str, port: int, access_log: bool):
 def start_child(target: str, host: str, port: int, access_log: bool):
     args = [
         sys.executable,
+        "-u",
         "-m",
         "quickapi.cli.main",
         "run",
@@ -156,7 +164,17 @@ def start_child(target: str, host: str, port: int, access_log: bool):
     ]
     if not access_log:
         args.append("--no-access-log")
-    return subprocess.Popen(args)
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    print("[quickapi] child starting", flush=True)
+    print(f"[quickapi]   command: {' '.join(args)}", flush=True)
+    try:
+        return subprocess.Popen(args, env=env)
+    except Exception as exc:
+        print("[quickapi] child failed to start", flush=True)
+        print(f"[quickapi]   error: {exc.__class__.__name__}: {exc}", flush=True)
+        print("[quickapi]   hint: check the app target, import path and Python syntax.", flush=True)
+        raise
 
 
 def stop_child(child):
@@ -168,16 +186,33 @@ def stop_child(child):
 
 
 def watched_files(target: str) -> list[Path]:
+    roots: set[Path] = set()
     if target.endswith(".py") or "/" in target or "\\" in target:
-        return [Path(target.split(":", 1)[0]).resolve()]
-    return sorted(Path.cwd().glob("**/*.py"))
+        target_file = Path(target.split(":", 1)[0]).resolve()
+        roots.add(target_file.parent if target_file.exists() else Path.cwd())
+    else:
+        roots.add(Path.cwd())
+
+    files: set[Path] = set()
+    for root in roots:
+        for path in root.glob("**/*.py"):
+            if any(part in {"__pycache__", ".git", ".venv", "venv", "node_modules"} for part in path.parts):
+                continue
+            files.add(path.resolve())
+    return sorted(files)
 
 
 def snapshot(paths: list[Path]) -> dict[str, float]:
     values = {}
     for path in paths:
         try:
-            values[str(path)] = path.stat().st_mtime
+            stat = path.stat()
+            values[str(path)] = stat.st_mtime_ns
         except OSError:
             values[str(path)] = 0
     return values
+
+
+def changed_files(old: dict[str, float], new: dict[str, float]) -> list[str]:
+    keys = set(old) | set(new)
+    return sorted(path for path in keys if old.get(path) != new.get(path))

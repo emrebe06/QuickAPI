@@ -1,6 +1,6 @@
 import json
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Iterator
 
 
 @dataclass
@@ -24,3 +24,8 @@ class JSONResponse:
         if isinstance(self.body, bytes):
             return self.body
         return self.to_json().encode("utf-8")
+
+    def iter_bytes(self, chunk_size: int = 1024 * 128) -> Iterator[bytes]:
+        payload = self.to_bytes()
+        for offset in range(0, len(payload), chunk_size):
+            yield payload[offset : offset + chunk_size]

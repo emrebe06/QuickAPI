@@ -3,7 +3,7 @@ from __future__ import annotations
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from threading import Lock
+from threading import BoundedSemaphore, Lock
 from time import perf_counter
 from typing import Any, Callable
 from uuid import uuid4
@@ -44,19 +44,37 @@ class JobRecord:
 
 
 class JobQueue:
-    def __init__(self, max_workers: int = 4, max_history: int = 1000):
+    def __init__(self, max_workers: int = 4, max_history: int = 1000, max_pending: int = 1024):
         self.max_workers = max_workers
         self.max_history = max_history
+        self.max_pending = max_pending
         self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="quickapi-job")
         self._jobs: dict[str, JobRecord] = {}
         self._lock = Lock()
+        self._pending = BoundedSemaphore(max(1, max_pending))
+        self._inflight = 0
 
     def submit(self, func: Callable[..., Any], *args, name: str | None = None, **kwargs) -> JobRecord:
+        if not self._pending.acquire(blocking=False):
+            record = JobRecord(id=uuid4().hex, name=name or getattr(func, "__name__", "job"), status="failed")
+            record.finished_at = now_iso()
+            record.error = {"code": "JOB_QUEUE_FULL", "message": "Job queue is full. Retry later.", "max_pending": self.max_pending}
+            return record
         record = JobRecord(id=uuid4().hex, name=name or getattr(func, "__name__", "job"))
         with self._lock:
             self._jobs[record.id] = record
+            self._inflight += 1
             self._trim_locked()
-        future = self._executor.submit(self._run, record.id, func, args, kwargs)
+        try:
+            future = self._executor.submit(self._run, record.id, func, args, kwargs)
+        except Exception as exc:
+            with self._lock:
+                self._inflight = max(0, self._inflight - 1)
+                record.status = "failed"
+                record.finished_at = now_iso()
+                record.error = {"type": exc.__class__.__name__, "message": str(exc)}
+            self._pending.release()
+            return record
         record.future = future
         return record
 
@@ -67,6 +85,21 @@ class JobQueue:
     def list(self) -> list[dict[str, Any]]:
         with self._lock:
             return [job.to_dict() for job in sorted(self._jobs.values(), key=lambda item: item.created_at, reverse=True)]
+
+    def stats(self) -> dict[str, Any]:
+        with self._lock:
+            statuses: dict[str, int] = {}
+            for record in self._jobs.values():
+                statuses[record.status] = statuses.get(record.status, 0) + 1
+            return {
+                "max_workers": self.max_workers,
+                "max_pending": self.max_pending,
+                "inflight": self._inflight,
+                "available_slots": max(0, self.max_pending - self._inflight),
+                "load": round(self._inflight / max(1, self.max_pending), 4),
+                "history": len(self._jobs),
+                "statuses": statuses,
+            }
 
     def cancel(self, job_id: str) -> JobRecord | None:
         with self._lock:
@@ -104,6 +137,8 @@ class JobQueue:
             with self._lock:
                 record.finished_at = now_iso()
                 record.duration_ms = round((perf_counter() - start) * 1000, 3)
+                self._inflight = max(0, self._inflight - 1)
+            self._pending.release()
 
     def _trim_locked(self):
         if len(self._jobs) <= self.max_history:

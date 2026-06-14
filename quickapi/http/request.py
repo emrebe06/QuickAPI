@@ -15,6 +15,7 @@ class Request:
     request_id: str | None = None
     raw_body: bytes = b""
     auth: dict[str, Any] | None = None
+    synaptic: dict[str, Any] | None = None
 
     @classmethod
     def build(
