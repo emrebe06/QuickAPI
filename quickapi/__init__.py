@@ -1,7 +1,9 @@
 from quickapi.app.application import QuickAPI
+from quickapi.asgi import QuickASGIApp
 from quickapi.db.adapters import SQLiteAdapter, MongoAdapter, SQLAlchemyAdapter
 from quickapi.llm.gateway import LLMGateway
 from quickapi.ml.guard import GuardConfig, GuardReport, MLGuard
+from quickapi.ml.model import LogisticRiskModel
 from quickapi.plugins.manager import PluginManifest, PluginManager, PluginPermission
 from quickapi.response.factory import ResponseFactory, q
 from quickapi.schema.standards import SchemaRegistry, StandardSchema, create_default_schema_registry
@@ -12,6 +14,7 @@ __version__ = "0.1.0"
 
 __all__ = [
     "QuickAPI",
+    "QuickASGIApp",
     "ResponseFactory",
     "q",
     "SQLiteAdapter",
@@ -21,6 +24,7 @@ __all__ = [
     "GuardConfig",
     "GuardReport",
     "MLGuard",
+    "LogisticRiskModel",
     "SchemaRegistry",
     "StandardSchema",
     "create_default_schema_registry",

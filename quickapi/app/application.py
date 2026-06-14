@@ -1,4 +1,5 @@
 import os
+import inspect
 from time import perf_counter
 
 from quickapi.app.config import QuickAPIConfig
@@ -6,6 +7,7 @@ from quickapi.agents.backend import AgentBackend
 from quickapi.app.lifecycle import Lifecycle
 from quickapi.bridge.native_bridge import NativeBridge
 from quickapi.bridge.native_runtime import NativeRuntime
+from quickapi.dependencies import DependencyContainer, DependencyContext
 from quickapi.db.adapters import DatabaseRegistry
 from quickapi.docs.html import render_docs_html
 from quickapi.docs.openapi import build_openapi
@@ -14,6 +16,7 @@ from quickapi.jobs.queue import JobQueue
 from quickapi.llm.gateway import LLMGateway
 from quickapi.metrics.request_id import new_request_id
 from quickapi.metrics.timing import elapsed_ms
+from quickapi.middleware import MiddlewareChain, MiddlewareContext
 from quickapi.ml.engine import MLEngine
 from quickapi.ml.guard import GuardConfig, MLGuard
 from quickapi.ml.synaptic import SynapticLayer
@@ -36,9 +39,11 @@ class QuickAPI:
     def __init__(self, name: str = "QuickAPI", secure: bool = False, ml: bool = False, docs: bool = True, **kwargs):
         self.config = QuickAPIConfig(name=name, secure=secure, ml=ml, docs=docs, **kwargs)
         self.router = Router()
+        self.dependencies = DependencyContainer(self)
+        self.middleware = MiddlewareChain(self)
         self.lifecycle = Lifecycle()
         self.security = SecurityGuard(enabled=secure, max_body_size=self.config.max_body_size)
-        self.ml_engine = MLEngine(enabled=ml)
+        self.ml_engine = MLEngine(enabled=ml, model_path=self.config.ml_model_path)
         self.native_bridge = NativeBridge()
         self.native_runtime = NativeRuntime(self.config.native_library) if self.config.native_library else NativeRuntime()
         self.synaptic = SynapticLayer(
@@ -102,6 +107,14 @@ class QuickAPI:
         metadata["native"] = {"library": library, "symbol": symbol}
         return self.router.add_route("POST", path, native_handler, **metadata)
 
+    def dependency(self, name: str | None = None, factory=None, *, cache: bool = True):
+        if factory is not None:
+            return self.dependencies.register(name or factory.__name__, factory, cache=cache)
+        return self.dependencies.decorator(name, cache=cache)
+
+    def use(self, middleware=None):
+        return self.middleware.add(middleware)
+
     def handle(self, method: str, path: str, body=None, query=None, headers=None, ip: str = "127.0.0.1", raw_body=b""):
         start = perf_counter()
         request_id = new_request_id()
@@ -116,6 +129,33 @@ class QuickAPI:
             raw_body=raw_body,
         )
 
+        try:
+            context = MiddlewareContext(app=self, request=request)
+            return self.middleware.run(context, lambda next_request: self._handle_request_sync(next_request, start, request_id))
+        except Exception as exc:
+            return self._finalize(q.server_error(detail=str(exc)), request_id, elapsed_ms(start))
+
+    async def handle_async(self, method: str, path: str, body=None, query=None, headers=None, ip: str = "127.0.0.1", raw_body=b""):
+        start = perf_counter()
+        request_id = new_request_id()
+        request = Request.build(
+            method=method,
+            path=path,
+            body=body,
+            query=query,
+            headers=headers,
+            ip=ip,
+            request_id=request_id,
+            raw_body=raw_body,
+        )
+
+        try:
+            context = MiddlewareContext(app=self, request=request)
+            return await self.middleware.run_async(context, lambda next_request: self._handle_request_async(next_request, start, request_id))
+        except Exception as exc:
+            return self._finalize(q.server_error(detail=str(exc)), request_id, elapsed_ms(start))
+
+    def _handle_request_sync(self, request: Request, start: float, request_id: str):
         try:
             built_in = self._handle_builtin(request)
             if built_in is not None:
@@ -165,7 +205,64 @@ class QuickAPI:
                 return self._finalize(validation_response, request_id, elapsed_ms(start))
 
             ml_result = self.ml_engine.analyze(request) if route.ml_check else None
+            request.dependencies = self._resolve_dependencies(route, request, path_params, ml_result)
             result = self.router.dispatch_route(route, request, path_params, ml_result)
+            return self._finalize(result, request_id, elapsed_ms(start))
+        except Exception as exc:
+            return self._finalize(q.server_error(detail=str(exc)), request_id, elapsed_ms(start))
+
+    async def _handle_request_async(self, request: Request, start: float, request_id: str):
+        try:
+            built_in = self._handle_builtin(request)
+            if built_in is not None:
+                return self._finalize(built_in, request_id, elapsed_ms(start))
+
+            guard_response = self.security.check(request)
+            if guard_response is not None:
+                return self._finalize(guard_response, request_id, elapsed_ms(start))
+
+            route, path_params, allowed = self.router.registry.match(request.method, request.path)
+            if allowed:
+                return self._finalize(q.method_not_allowed(detail={"allowed": allowed}), request_id, elapsed_ms(start))
+            if route is None:
+                return self._finalize(
+                    q.not_found(detail=f"No route found for {request.method} {request.path}"),
+                    request_id,
+                    elapsed_ms(start),
+                )
+
+            auth_response = self._authorize(route, request)
+            if auth_response is not None:
+                return self._finalize(auth_response, request_id, elapsed_ms(start))
+
+            validation_issues = self._collect_validation_issues(route, request, path_params)
+            guard_report = self.ml_guard.inspect(
+                request,
+                route=route,
+                path_params=path_params,
+                validation_issues=validation_issues,
+            )
+            request.synaptic = guard_report.to_dict()
+            if guard_report.blocked and not validation_issues:
+                return self._finalize(
+                    q.forbidden(
+                        "Request blocked by QuickAPI ML Guard",
+                        {
+                            "guard": guard_report.to_dict(),
+                            "hint": "Fix the reported signal or disable/tune ml_guard for this trusted route.",
+                        },
+                    ),
+                    request_id,
+                    elapsed_ms(start),
+                )
+
+            validation_response = self._validation_response(validation_issues, guard_report)
+            if validation_response is not None:
+                return self._finalize(validation_response, request_id, elapsed_ms(start))
+
+            ml_result = self.ml_engine.analyze(request) if route.ml_check else None
+            request.dependencies = await self._resolve_dependencies_async(route, request, path_params, ml_result)
+            result = await self.router.dispatch_route_async(route, request, path_params, ml_result)
             return self._finalize(result, request_id, elapsed_ms(start))
         except Exception as exc:
             return self._finalize(q.server_error(detail=str(exc)), request_id, elapsed_ms(start))
@@ -174,6 +271,11 @@ class QuickAPI:
         host = host or self.config.host
         port = port or self.config.port
         QuickListener(self, host=host, port=port, access_log=access_log).serve()
+
+    def asgi(self):
+        from quickapi.asgi import QuickASGIApp
+
+        return QuickASGIApp(self)
 
     def cors_headers(self) -> dict[str, str]:
         return dict(DEFAULT_CORS_HEADERS)
@@ -219,10 +321,13 @@ class QuickAPI:
                 "docs": self.config.docs,
                 "secure": self.config.secure,
                 "ml": self.config.ml,
+                "ml_model": self.ml_engine.model_info(),
                 "ml_guard": self.ml_guard.config.enabled,
                 "job_workers": self.config.job_workers,
                 "job_queue": self.jobs.stats(),
                 "routes": len(self.routes),
+                "dependencies": len(self.dependencies.list()),
+                "middleware": len(self.middleware.list()),
             },
             "native": native,
             "features": {
@@ -235,6 +340,9 @@ class QuickAPI:
                 "llm_gateway": True,
                 "database_registry": True,
                 "schema_registry": True,
+                "dependency_injection": True,
+                "middleware": True,
+                "asgi_adapter": True,
                 "webhooks": True,
                 "agent_backend": True,
                 "local_tools_enabled": self.config.local_tools_enabled,
@@ -291,6 +399,8 @@ class QuickAPI:
             return q.ok({"databases": self.databases.list(), "health": self.databases.health()})
         if request.method == "GET" and request.path == "/quick/schemas":
             return q.ok({"schemas": self.schemas.list()})
+        if request.method == "GET" and request.path == "/quick/dependencies":
+            return q.ok({"dependencies": self.dependencies.list(), "middleware": self.middleware.list()})
         if request.method == "POST" and request.path == "/quick/tools/run":
             if not self.config.local_tools_enabled:
                 return q.forbidden(
@@ -397,6 +507,31 @@ class QuickAPI:
     def _validate_route_input(self, route, request: Request, path_params: dict[str, str]):
         issues = self._collect_validation_issues(route, request, path_params)
         return self._validation_response(issues, None)
+
+    def _dependency_names_for_route(self, route) -> list[str]:
+        names = list(route.dependencies or [])
+        try:
+            signature = inspect.signature(route.handler)
+        except (TypeError, ValueError):
+            return names
+        for name in signature.parameters:
+            if self.dependencies.has(name):
+                names.append(name)
+        return list(dict.fromkeys(names))
+
+    def _resolve_dependencies(self, route, request: Request, path_params: dict[str, str], ml_result):
+        names = self._dependency_names_for_route(route)
+        if not names:
+            return {}
+        context = DependencyContext(app=self, request=request, route=route, path_params=path_params, ml=ml_result)
+        return self.dependencies.resolve_many(names, context)
+
+    async def _resolve_dependencies_async(self, route, request: Request, path_params: dict[str, str], ml_result):
+        names = self._dependency_names_for_route(route)
+        if not names:
+            return {}
+        context = DependencyContext(app=self, request=request, route=route, path_params=path_params, ml=ml_result)
+        return await self.dependencies.resolve_many_async(names, context)
 
     def _collect_validation_issues(self, route, request: Request, path_params: dict[str, str]):
         issues = []

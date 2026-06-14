@@ -22,6 +22,7 @@ class Route:
     path_schema: Any = None
     response_schema: Any = None
     examples: dict[str, Any] = field(default_factory=dict)
+    dependencies: list[str] = field(default_factory=list)
 
     def __post_init__(self):
         self.method = self.method.upper()
@@ -52,6 +53,7 @@ class Route:
             "path_schema": self.path_schema,
             "response_schema": self.response_schema,
             "examples": self.examples,
+            "dependencies": list(self.dependencies),
         }
 
     @staticmethod

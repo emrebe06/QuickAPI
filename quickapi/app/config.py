@@ -23,6 +23,7 @@ class QuickAPIConfig:
     native_library: str | None = None
     synaptic: bool = False
     ml_guard: bool = False
+    ml_model_path: str | None = None
     ml_guard_block: bool = True
     ml_guard_strict_validation: bool = True
     ml_guard_max_string_length: int = 4096

@@ -16,6 +16,8 @@ class Request:
     raw_body: bytes = b""
     auth: dict[str, Any] | None = None
     synaptic: dict[str, Any] | None = None
+    dependencies: dict[str, Any] = field(default_factory=dict)
+    state: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def build(

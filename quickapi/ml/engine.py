@@ -3,6 +3,7 @@ from typing import Any
 
 from quickapi.ml.anomaly import detect_anomaly
 from quickapi.ml.intent import infer_intent
+from quickapi.ml.model import LogisticRiskModel, RiskModel
 from quickapi.ml.risk import extract_features, score_bot, score_risk
 
 
@@ -16,6 +17,8 @@ class MLResult:
     confidence: float = 0.0
     reasons: list[str] = field(default_factory=list)
     features: dict[str, Any] = field(default_factory=dict)
+    model_score: float = 0.0
+    model_name: str | None = None
 
     def to_dict(self):
         return {
@@ -27,12 +30,15 @@ class MLResult:
             "confidence": self.confidence,
             "reasons": list(self.reasons),
             "features": dict(self.features),
+            "model_score": self.model_score,
+            "model_name": self.model_name,
         }
 
 
 class MLEngine:
-    def __init__(self, enabled: bool = False):
+    def __init__(self, enabled: bool = False, model: RiskModel | None = None, model_path: str | None = None):
         self.enabled = enabled
+        self.model = model or self._load_model(model_path) or LogisticRiskModel.default()
 
     def analyze(self, request) -> MLResult:
         if not self.enabled:
@@ -47,9 +53,20 @@ class MLEngine:
         anomaly, anomaly_reasons = detect_anomaly(features)
         if anomaly:
             risk = min(0.99, risk + 0.12)
+        feature_payload = features.to_dict()
+        feature_payload.update(
+            {
+                "intent": intent,
+                "missing_user_agent": "missing_user_agent" in bot_reasons,
+                "missing_accept": "missing_accept" in bot_reasons,
+                "anomaly": anomaly,
+            }
+        )
+        model_score = self.model.predict_proba(feature_payload) if self.model else 0.0
+        risk = max(risk, model_score)
 
         action = self._policy(risk, bot, anomaly)
-        confidence = min(0.99, 0.55 + (risk * 0.25) + (bot * 0.15) + (0.05 if anomaly else 0.0))
+        confidence = min(0.99, 0.55 + (risk * 0.25) + (bot * 0.15) + (model_score * 0.1) + (0.05 if anomaly else 0.0))
         return MLResult(
             intent=intent,
             risk_score=round(risk, 4),
@@ -58,8 +75,26 @@ class MLEngine:
             anomaly=anomaly,
             confidence=round(confidence, 4),
             reasons=risk_reasons + bot_reasons + anomaly_reasons,
-            features=features.to_dict(),
+            features=feature_payload,
+            model_score=round(model_score, 4),
+            model_name=getattr(self.model, "name", None),
         )
+
+    def train(self, samples: list[dict[str, Any]], *, epochs: int = 50, learning_rate: float = 0.05):
+        if not hasattr(self.model, "train"):
+            raise RuntimeError("Configured model does not support training")
+        self.model.train(samples, epochs=epochs, learning_rate=learning_rate)
+        return self
+
+    def save_model(self, path: str):
+        if not hasattr(self.model, "save"):
+            raise RuntimeError("Configured model does not support save_model")
+        self.model.save(path)
+
+    def model_info(self) -> dict[str, Any]:
+        if hasattr(self.model, "to_dict"):
+            return self.model.to_dict()
+        return {"name": getattr(self.model, "name", self.model.__class__.__name__)}
 
     @staticmethod
     def _policy(risk: float, bot: float, anomaly: bool) -> str:
@@ -70,3 +105,8 @@ class MLEngine:
         if risk >= 0.45:
             return "observe"
         return "allow"
+
+    def _load_model(self, model_path: str | None):
+        if not model_path:
+            return None
+        return LogisticRiskModel.load(model_path)

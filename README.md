@@ -13,9 +13,12 @@ QuickAPI is not a FastAPI clone. Decorators are familiar, but the goal is differ
 - `QuickAPI` app object with `@app.get`, `@app.post`, `@app.put`, `@app.patch`, `@app.delete`
 - `q` response factory for consistent API output
 - CLI runner similar to `uvicorn`: `quickapi run main:app --host 0.0.0.0 --port 8000`
+- Optional ASGI adapter for async servers such as Uvicorn/Hypercorn
 - Built-in lightweight docs at `/docs`, `/quick`, and `/openapi.json`
-- Request object injection: `body`, `query`, `headers`, `request`, `ml`
-- ML guard with intent classification, request feature extraction, anomaly signals, risk scoring, bot scoring, and action policy
+- Request object injection: `body`, `query`, `headers`, `request`, `ml`, `state`, and registered dependencies
+- Middleware and dependency injection for auth, DB sessions, tracing, tenant context, and internal services
+- ML guard with deterministic rules plus a lightweight trainable logistic risk model, model load/save hooks, native scan signals, and action policy
+- JSON Schema-style validation with `$ref`, `oneOf`, `anyOf`, `allOf`, `patternProperties`, `dependentRequired`, and standard schema registry support such as `openrtb.bid_request`
 - Streaming file responses through `FileResponse`, `app.file()`, and `app.static_file()`
 - Built-in job queue for long-running work with `202 Accepted`, `job_id`, status, and cancel endpoints
 - Ecommerce response presets
@@ -78,6 +81,28 @@ Local development shortcut:
 
 ```bash
 quickapi dev main.py --port 8080
+```
+
+ASGI usage:
+
+```python
+from quickapi import QuickAPI, q
+
+app = QuickAPI("Async API", docs=True)
+
+
+@app.get("/async-ping")
+async def async_ping():
+    return q.ok({"pong": True})
+
+
+asgi_app = app.asgi()
+```
+
+Run with an ASGI server you choose:
+
+```bash
+uvicorn main:asgi_app --host 0.0.0.0 --port 8000
 ```
 
 ## Standard JSON Response
@@ -200,6 +225,34 @@ Missing auth returns `401`, invalid tokens return `403`, and invalid request fie
 
 The same route metadata is exported through `/openapi.json`, including bearer auth, path/query parameters, JSON request bodies, tags, summaries, and declared error responses.
 
+## Middleware And Dependency Injection
+
+QuickAPI keeps handler signatures small, but larger apps can register request-scoped dependencies and middleware:
+
+```python
+from quickapi import QuickAPI, q
+
+app = QuickAPI("Company API")
+
+
+@app.dependency("tenant")
+def tenant_context(request):
+    return {"id": request.headers.get("X-Tenant-ID", "default")}
+
+
+@app.use
+def trace_middleware(request, call_next):
+    request.state["trace"] = request.headers.get("X-Trace-ID", request.request_id)
+    return call_next(request)
+
+
+@app.get("/me", dependencies=["tenant"])
+def me(tenant, state):
+    return q.ok({"tenant": tenant["id"], "trace": state["trace"]})
+```
+
+Dependencies can be sync or async. Async dependencies and async route handlers are supported through the ASGI adapter.
+
 ## ML Guard Example
 
 ```python
@@ -210,7 +263,22 @@ def checkout(body, ml):
     return q.ok({"payment": "accepted", "ml": ml.to_dict()})
 ```
 
-The first ML engine is dependency-free and deterministic, but it is no longer a tiny stub. It extracts request features, classifies intent, scores risk and bot-likelihood, flags anomalies, and returns an action policy:
+The built-in ML engine is intentionally dependency-free. It is not a large pretrained model, and the README should not pretend otherwise. It combines deterministic guard rules with a small trainable logistic risk model that can be loaded, trained, saved, or replaced by a custom adapter:
+
+```python
+from quickapi import LogisticRiskModel, QuickAPI
+
+model = LogisticRiskModel.default()
+model.train([
+    {"label": "bad", "features": {"method": "POST", "path_depth": 3, "suspicious_hits": ["sql_injection"]}},
+    {"label": "good", "features": {"method": "GET", "path_depth": 1, "suspicious_hits": []}},
+])
+model.save("quickapi-risk-model.json")
+
+app = QuickAPI("Guarded API", ml=True, ml_guard=True, ml_model_path="quickapi-risk-model.json")
+```
+
+At request time the engine extracts request features, classifies intent, scores risk and bot-likelihood, runs the model, flags anomalies, and returns an action policy:
 
 ```json
 {
@@ -220,6 +288,8 @@ The first ML engine is dependency-free and deterministic, but it is no longer a 
   "action": "block",
   "anomaly": true,
   "confidence": 0.86,
+  "model_score": 0.88,
+  "model_name": "quickapi-logistic-risk-v1",
   "reasons": ["sensitive_intent:payment_attempt", "sql_injection"],
   "features": {
     "method": "POST",
@@ -230,6 +300,8 @@ The first ML engine is dependency-free and deterministic, but it is no longer a 
   }
 }
 ```
+
+For production ML, use the same model adapter surface to wrap an ONNX, scikit-learn, remote inference, or in-house model. The native C/C++ scanner still runs as a fast guard signal before business code.
 
 ## Streaming Files
 
@@ -303,6 +375,8 @@ build/native/Release/quickapi_native_bench.exe 200000 250
 
 Native hotpath helpers are also available through `NativeRuntime` for payload feature count, risk score, stable request fingerprints, raw HTTP parsing, response writing, and listener-style parse/security/route/response exchange primitives.
 
+Important current boundary: `app.native_post(...)` works through `ctypes` and routes from Python into a native symbol. The main HTTP listener and public route registry are still Python-owned today. Native routing/listener integration is an active core direction, not something the README should imply is already the default server path.
+
 ## Native Runtime Foundation
 
 QuickAPI now ships a larger C/C++ foundation under `quickapi/native`. Python remains the developer and intelligence layer, while the native side is being shaped for high-traffic hot paths:
@@ -365,7 +439,10 @@ quickapi/
   http/        Request, headers, methods, status
   response/    JSON response formatting and q factory
   security/    CORS, rate limit, guard checks
-  ml/          Intent/risk/anomaly engine stubs
+  ml/          Rule guard, model adapter, trainable risk model, Synaptic layer
+  dependencies.py Request dependency injection
+  middleware.py   Sync/async middleware chain
+  asgi.py         Optional ASGI adapter
   ecommerce/   Ecommerce response presets
   server/      HTTP listener and access logs
   bridge/      Python to native bridge
@@ -407,10 +484,11 @@ python -m pytest
 - Native route matching bridge from Python
 - Native JSON parse/stringify hot path
 - Structured JSON logs
-- Development reload improvements
+- More complete benchmark suite against FastAPI, Flask, Starlette, Go, and C# APIs
 - More complete OpenAPI schema generation
 - Production worker model
-- Optional ASGI adapter without depending on external frameworks
+- Deeper ASGI lifecycle support and WebSocket boundary decisions
+- External model adapters for ONNX, scikit-learn, and remote inference
 
 ## License And Rights
 

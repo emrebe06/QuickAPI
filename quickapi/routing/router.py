@@ -1,4 +1,5 @@
 import inspect
+import asyncio
 from typing import Any
 
 from quickapi.response.factory import q
@@ -32,7 +33,24 @@ class Router:
     def dispatch_route(self, route: Route, request, path_params: dict[str, str], ml_result=None):
         return self._call_route(route, request, path_params, ml_result)
 
+    async def dispatch_route_async(self, route: Route, request, path_params: dict[str, str], ml_result=None):
+        return await self._call_route_async(route, request, path_params, ml_result)
+
     def _call_route(self, route: Route, request, path_params: dict[str, str], ml_result=None):
+        kwargs = self._build_kwargs(route, request, path_params, ml_result)
+        result = route.handler(**kwargs)
+        if inspect.isawaitable(result):
+            return asyncio.run(result)
+        return result
+
+    async def _call_route_async(self, route: Route, request, path_params: dict[str, str], ml_result=None):
+        kwargs = self._build_kwargs(route, request, path_params, ml_result)
+        result = route.handler(**kwargs)
+        if inspect.isawaitable(result):
+            return await result
+        return result
+
+    def _build_kwargs(self, route: Route, request, path_params: dict[str, str], ml_result=None):
         signature = inspect.signature(route.handler)
         kwargs: dict[str, Any] = {}
         for name in signature.parameters:
@@ -48,6 +66,10 @@ class Router:
                 kwargs[name] = request.auth
             elif name == "ml":
                 kwargs[name] = ml_result
+            elif name == "state":
+                kwargs[name] = request.state
+            elif name in request.dependencies:
+                kwargs[name] = request.dependencies[name]
             elif name in path_params:
                 kwargs[name] = path_params[name]
-        return route.handler(**kwargs)
+        return kwargs
