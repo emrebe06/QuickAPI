@@ -44,6 +44,8 @@ See [SECURITY_MODEL.md](SECURITY_MODEL.md) for trust boundaries, defaults, nativ
 
 ## Installation
 
+Full install guide: [docs/INSTALL.md](docs/INSTALL.md)
+
 For local development:
 
 ```bash
