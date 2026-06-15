@@ -2,9 +2,22 @@
 
 **Write Python. Run Native. Return JSON.**
 
-QuickAPI is a lightweight JSON-first API runtime with a Python developer layer and a future-ready C/C++ native core. It is designed for ecommerce APIs, mobile backends, AI tools, local services, native engines, and fast JSON traffic.
+QuickAPI is a lightweight JSON-first Python API runtime for building backend APIs, ecommerce services, mobile backends, AI tools, internal company tools, webhook processors, and fast JSON services. It gives developers a small Python surface while preparing hot paths for native C/C++ execution.
 
 QuickAPI is not a FastAPI clone. Decorators are familiar, but the goal is different: QuickAPI standardizes every request and response, exposes clear error objects, keeps the developer surface small, and prepares hot paths for a native C/C++ core.
+
+## Ecosystem
+
+QuickAPI is the API runtime in a small native-first Python ecosystem:
+
+- [Katmer](https://github.com/emrebe06/katmer): native C ABI layered execution core.
+- [SQLNocturne](https://github.com/emrebe06/sqlnocturne): safety-first JSON SQL runtime for Python.
+
+Each project can run alone. Together they target Python backends that need clean APIs, guarded data access, native acceleration points, and predictable JSON output.
+
+## Keywords
+
+Python API runtime, JSON API framework, lightweight backend framework, native Python backend, C++ API runtime, ecommerce backend, AI agent backend, webhook processor, mobile backend API, FastAPI alternative, ASGI API runtime, secure JSON API.
 
 ## Features
 
